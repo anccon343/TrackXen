@@ -20,6 +20,8 @@ dependencies = [
     "onnxruntime-gpu[cuda,cudnn]==1.31.1",
     "tensorrt-cu13-libs>=10,<11",
     "cyndilib",
+    # cameras' own network streams (RTSP, e.g. PTZOptics): FFmpeg with low-delay options
+    "av",
     "python-osc",
     "psutil",
     "pywin32",

@@ -23,6 +23,8 @@ Third-party software included in this program, under its own licence:
   https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html)
 - NDI runtime (Vizrt NDI AB), through cyndilib (MIT licence). NDI(R) is a registered trademark of
   Vizrt NDI AB; see https://ndi.video
+- PyAV (BSD-3-Clause), with the FFmpeg libraries it bundles, built with GPL components (x264, x265):
+  GPL-2.0-or-later, https://ffmpeg.org/legal.html. Used to read cameras' own network streams (RTSP).
 - OpenCV (Apache-2.0), with the YuNet face detector (MIT) and SFace face recognizer (Apache-2.0)
   from the OpenCV model zoo
 - Python (PSF licence), NumPy (BSD), FastAPI (MIT), Uvicorn (BSD), Pydantic (MIT), psutil (BSD),

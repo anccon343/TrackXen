@@ -7,6 +7,13 @@ ends with a stop command (also on Ctrl+C).
   python tools/visca_probe.py 192.168.1.50 move --pan right --speed 3 --seconds 2 --yes
   python tools/visca_probe.py 192.168.1.50 sweep --axis pan --speeds 1-24 --freed-port 40001 --yes
   python tools/visca_probe.py 192.168.1.50 stop
+
+PTZOptics G2 (plain VISCA, UDP 1259 or TCP 5678, no FreeD):
+
+  python tools/visca_probe.py 192.168.1.60 --transport udp info
+  python tools/visca_probe.py 192.168.1.60 --transport udp calibrate --yes     (units per degree, from the end stops)
+  python tools/visca_probe.py 192.168.1.60 --transport udp zoom-range --yes
+  python tools/visca_probe.py 192.168.1.60 --transport udp sweep --axis tilt --speeds 1-20 --units-per-degree 13.3 --yes
 """
 
 from __future__ import annotations
@@ -124,6 +131,8 @@ async def cmd_sweep(client: visca.ViscaClient, args) -> None:
             axis = 0 if args.axis == "pan" else 1
             units = abs(p1[axis] - p0[axis])
             deg = abs((f1.pan - f0.pan) if axis == 0 else (f1.tilt - f0.tilt)) if f0 and f1 else None
+            if deg is None and args.units_per_degree:  # no FreeD (PTZOptics): degrees from the calibration
+                deg = units / args.units_per_degree
             latency = (tracker.first_motion - sent) * 1000 if tracker.first_motion else None
             rows.append([speed, round(args.seconds, 3), units, round(units / args.seconds, 1),
                          round(deg, 4) if deg is not None else "",
@@ -139,13 +148,81 @@ async def cmd_sweep(client: visca.ViscaClient, args) -> None:
         if transport:
             transport.close()
     path = results_path(f"speed-sweep-{args.axis}")
-    write_csv(path, ["speed", "seconds", "visca_units", "units_per_s", "freed_deg", "deg_per_s",
+    write_csv(path, ["speed", "seconds", "visca_units", "units_per_s", "deg", "deg_per_s",
                      "units_per_deg", "motion_latency_ms", "elapsed_s"], rows)
+    print(f"saved {path}")
+    if all(r[5] != "" for r in rows):  # the camera's speed table, for Settings -> Cameras (pan_speeds/tilt_speeds)
+        print(f"{args.axis}_speeds: {[r[5] for r in rows]}")
+
+
+async def _drive_to_end(client: visca.ViscaClient, cmd: bytes, axis: int, timeout: float = 40.0) -> int:
+    """Drive until the position stops changing (the end stop or a limit); returns that position."""
+    await client.command(cmd)
+    last, still_since, start = None, None, time.monotonic()
+    try:
+        while time.monotonic() - start < timeout:
+            await asyncio.sleep(0.1)
+            pos = (await client.pan_tilt_position())[axis]
+            if pos != last:
+                last, still_since = pos, time.monotonic()
+            elif time.monotonic() - still_since > 0.6:
+                return pos
+        raise visca.ViscaError(f"still moving after {timeout:.0f} s")
+    finally:
+        await client.command(visca.pan_tilt_stop())
+
+
+async def cmd_calibrate(client: visca.ViscaClient, args) -> None:
+    """Units per degree from the end stops: the camera turns to both pan ends and both tilt ends (data sheet
+    angles: PTZOptics G2 pan ±170°, tilt -30°..+90°), then goes back. Clear the camera's pan/tilt limits
+    first, or the limits are measured instead of the ends."""
+    home = await client.pan_tilt_position()
+    s, t = args.speed, min(args.speed, args.tilt_speed_max)  # (a PTZOptics refuses tilt speeds above 20)
+    left = await _drive_to_end(client, visca.pan_tilt_drive(s, 1, visca.PanDir.LEFT, visca.TiltDir.STOP), 0)
+    right = await _drive_to_end(client, visca.pan_tilt_drive(s, 1, visca.PanDir.RIGHT, visca.TiltDir.STOP), 0)
+    down = await _drive_to_end(client, visca.pan_tilt_drive(1, t, visca.PanDir.STOP, visca.TiltDir.DOWN), 1)
+    up = await _drive_to_end(client, visca.pan_tilt_drive(1, t, visca.PanDir.STOP, visca.TiltDir.UP), 1)
+    await client.command(visca.pan_tilt_absolute(home[0], home[1], s, t))
+    pan_units, tilt_units = abs(right - left) / args.pan_range, abs(up - down) / args.tilt_range
+    print(f"pan ends {left} .. {right} over {args.pan_range:g} deg: {pan_units:.3f} units per degree"
+          f"{' (right is negative: pan_sign -1)' if right < left else ''}")
+    print(f"tilt ends {down} .. {up} over {args.tilt_range:g} deg: {tilt_units:.3f} units per degree"
+          f"{' (up is negative: tilt_sign -1)' if up < down else ''}")
+    print(f"Settings -> Cameras: units_per_degree {pan_units:.3f}, tilt_units_per_degree {tilt_units:.3f}")
+    path = results_path("calibrate")
+    write_csv(path, ["pan_left", "pan_right", "pan_range_deg", "pan_units_per_deg", "tilt_down", "tilt_up",
+                     "tilt_range_deg", "tilt_units_per_deg"],
+              [[left, right, args.pan_range, round(pan_units, 4), down, up, args.tilt_range, round(tilt_units, 4)]])
+    print(f"saved {path}")
+
+
+async def cmd_zoom_range(client: visca.ViscaClient, args) -> None:
+    """The zoom position at full wide and full tele (Settings -> Cameras: lens zoom_max)."""
+    start = await client.zoom_position()
+    ends = []
+    for cmd in (visca.zoom_wide(7), visca.zoom_tele(7)):
+        await client.command(cmd)
+        last, still_since, t0 = None, time.monotonic(), time.monotonic()
+        while time.monotonic() - t0 < 20:
+            await asyncio.sleep(0.1)
+            pos = await client.zoom_position()
+            if pos != last:
+                last, still_since = pos, time.monotonic()
+            elif time.monotonic() - still_since > 0.6:
+                break
+        await client.command(visca.zoom_stop())
+        ends.append(last)
+    await client.command(visca.zoom_direct(start))
+    print(f"zoom: wide {ends[0]}, tele {ends[1]} (lens zoom_max {ends[1]})")
+    path = results_path("zoom-range")
+    write_csv(path, ["zoom_wide", "zoom_tele"], [ends])
     print(f"saved {path}")
 
 
 COMMANDS = {"info": (cmd_info, False), "move": (cmd_move, True), "zoom": (cmd_zoom, True),
-            "preset": (cmd_preset, True), "sweep": (cmd_sweep, True), "stop": (None, False)}
+            "preset": (cmd_preset, True), "sweep": (cmd_sweep, True), "calibrate": (cmd_calibrate, True),
+            "zoom-range": (cmd_zoom_range, True), "stop": (None, False)}
+DEFAULT_PORTS = {"sony": visca.VISCA_PORT, "udp": visca.PLAIN_UDP_PORT, "tcp": visca.TCP_PORT}
 
 
 async def main(args) -> int:
@@ -153,7 +230,8 @@ async def main(args) -> int:
     if moves and not args.yes:
         print("This command moves the camera. Add --yes to confirm it's safe to move it now.")
         return 2
-    client = visca.ViscaClient(args.host, args.port, timeout=args.timeout, use_header=not args.no_header)
+    transport = "udp" if args.no_header and args.transport == "sony" else args.transport
+    client = visca.open_client(args.host, args.port or DEFAULT_PORTS[transport], transport, timeout=args.timeout)
     await client.connect()
     try:
         if handler:
@@ -173,28 +251,39 @@ async def main(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("host")
-    p.add_argument("--port", type=int, default=visca.VISCA_PORT)
+    p.add_argument("--transport", choices=["sony", "udp", "tcp"], default="sony",
+                   help="sony: VISCA over IP with header, UDP 52381 (BirdDog); udp / tcp: plain VISCA (PTZOptics 1259 / 5678)")
+    p.add_argument("--port", type=int, help="default: 52381, 1259 or 5678 by --transport")
     p.add_argument("--timeout", type=float, default=1.0)
-    p.add_argument("--no-header", action="store_true", help="send bare VISCA without the IP header")
+    p.add_argument("--no-header", action="store_true", help="the same as --transport udp")
     p.add_argument("--yes", action="store_true", help="confirm that the camera may move")
+    yes = argparse.ArgumentParser(add_help=False)  # --yes also after the command (move ... --yes)
+    yes.add_argument("--yes", action="store_true", default=argparse.SUPPRESS, help="confirm that the camera may move")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("info", help="read power, pan/tilt, zoom and focus (no movement)")
     sub.add_parser("stop", help="stop pan, tilt and zoom")
-    m = sub.add_parser("move", help="drive pan/tilt for a few seconds")
+    m = sub.add_parser("move", parents=[yes], help="drive pan/tilt for a few seconds")
     m.add_argument("--pan", choices=["left", "right"])
     m.add_argument("--tilt", choices=["up", "down"])
     m.add_argument("--speed", type=int, default=3)
     m.add_argument("--seconds", type=float, default=1.0)
-    z = sub.add_parser("zoom", help="zoom to a position")
+    z = sub.add_parser("zoom", parents=[yes], help="zoom to a position")
     z.add_argument("--to", type=int, required=True)
-    pr = sub.add_parser("preset", help="recall a preset")
+    pr = sub.add_parser("preset", parents=[yes], help="recall a preset")
     pr.add_argument("--recall", type=int, required=True)
-    s = sub.add_parser("sweep", help="measure every speed step")
+    s = sub.add_parser("sweep", parents=[yes], help="measure every speed step")
     s.add_argument("--axis", choices=["pan", "tilt"], default="pan")
     s.add_argument("--speeds", default="1-24", help="e.g. 1-24 or 1,2,3,8")
     s.add_argument("--seconds", type=float, default=1.5, help="drive time per step")
     s.add_argument("--settle", type=float, default=0.6, help="wait after each stop")
     s.add_argument("--freed-port", type=int, help="also measure with FreeD on this UDP port")
+    s.add_argument("--units-per-degree", type=float, help="without FreeD: degrees from VISCA units (from calibrate)")
+    c = sub.add_parser("calibrate", parents=[yes], help="units per degree from the pan and tilt end stops (the camera turns fully)")
+    c.add_argument("--speed", type=int, default=12, help="drive speed step")
+    c.add_argument("--pan-range", type=float, default=340.0, help="degrees between the pan ends (PTZOptics G2: 340)")
+    c.add_argument("--tilt-range", type=float, default=120.0, help="degrees between the tilt ends (PTZOptics G2: 120)")
+    c.add_argument("--tilt-speed-max", type=int, default=20, help="the camera's fastest tilt step (PTZOptics: 20)")
+    sub.add_parser("zoom-range", parents=[yes], help="zoom positions at full wide and full tele")
     return p
 
 

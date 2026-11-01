@@ -29,14 +29,43 @@ front of people.
 1. **This PC:** check that the graphics card is found. "Test this PC's speed" measures it and
    recommends Light, Auto or HYPER; press **Use it**.
 2. **Cameras:** press **Find cameras**. The P400s appear (NDI must be on in each camera, in BirdUI).
-   Tick up to four and press **Add**.
+   Tick them. PTZOptics cameras: type the IP address under "Cameras without NDI", **Test**, then **Add
+   to the list**. Up to four cameras in all; press **Add**.
 3. **vMix and the mixer** (optional, see section 6).
 
-For exact positions, set each camera's FreeD output (BirdUI → CamControl → FreeD) to this PC's
+For exact positions, set each P400's FreeD output (BirdUI → CamControl → FreeD) to this PC's
 address; Settings → Cameras shows which port each camera uses.
 
 A camera can also come in through an **HDMI/SDI capture card** instead of NDI: Settings → Cameras →
 "Video from: HDMI / SDI capture card" and its device number. It is still controlled over the network.
+
+### PTZOptics cameras (G2, e.g. PT20X-SDI-GY-G2)
+
+They have no NDI and no FreeD; TrackXen takes their **own network stream** (RTSP) and asks them for
+their position 20 times a second over VISCA.
+
+- **In the camera's web page** (type its IP address in a browser):
+  - VISCA over UDP on, port **1259** (the default)
+  - the RTSP stream on, without a login (the default)
+  - recommended for the least delay: H.264, 1920×1080 at 30 fps (or 1280×720 on the sub stream),
+    I-frame interval 30
+- **Settings → Cameras:** "Camera type: PTZOptics G2" fills everything in. The video comes from
+  `rtsp://<camera IP>:554/1` (main stream); **Sub stream** switches to `/2`. **Test camera** shows
+  whether it answers and what its video is like.
+- **VISCA over UDP** works next to vMix or a joystick. The camera accepts only **one** TCP control
+  connection, so don't choose TCP when vMix also controls it over TCP.
+- **Once per camera, with someone there (it moves):** measure its numbers. Until then TrackXen uses
+  the data sheet's.
+  ```
+  .venv\Scripts\python tools\visca_probe.py <camera IP> --transport udp calibrate --yes
+  .venv\Scripts\python tools\visca_probe.py <camera IP> --transport udp zoom-range --yes
+  .venv\Scripts\python tools\stream_probe.py rtsp://<camera IP>:554/1 --delay <camera IP> --yes
+  ```
+  Then enter the units per degree and the video delay in Settings → Cameras. Clear the camera's
+  pan/tilt limits before `calibrate`, or it measures the limits instead of the end stops.
+- A network stream has more delay than NDI or a capture card. If the PTZOptics cameras later go into
+  vMix over SDI, vMix can also pass them on as NDI (vMix External Output / NDI). That is the quickest
+  way into TrackXen.
 
 ## 3. Everyday use (the Cameras page)
 

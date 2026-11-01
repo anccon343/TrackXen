@@ -1,12 +1,14 @@
-"""Where camera video comes from: NDI (the normal case), an HDMI/SDI capture device, or a video
-file (replay tests).
+"""Where camera video comes from: NDI (the normal case), a camera's own network stream (RTSP,
+e.g. PTZOptics), an HDMI/SDI capture device, or a video file (replay tests).
 
-Both keep only the newest frame and record real arrival times, so statistics and the
+All keep only the newest frame and record real arrival times, so statistics and the
 tracker see the same timing the live system would.
 """
 
 from __future__ import annotations
 
+import re
+import statistics
 import threading
 import time
 from collections import deque
@@ -20,10 +22,11 @@ from trackxen.devices.ndi_in import Frame, NdiReceiver
 @dataclass
 class SourceConfig:
     camera: str  # camera id, e.g. "cam1"
-    kind: str = "ndi"  # "ndi", "capture" or "file"
-    name: str = ""  # NDI source name (full or part of it), capture device number, or file path
+    kind: str = "ndi"  # "ndi", "stream", "capture" or "file"
+    name: str = ""  # NDI source name (full or part of it), stream URL, capture device number, or file path
     low_bandwidth: bool = False
     loop: bool = True  # files: start over at the end
+    transport: str = "tcp"  # streams: how RTSP packets travel ("tcp" or "udp")
 
 
 class FileSource:
@@ -131,6 +134,108 @@ class CaptureSource(FileSource):
             self._stop.wait(1.0)
 
 
+class StreamSource:
+    """A camera's own network stream (RTSP; PTZOptics: rtsp://IP:554/1 main, /2 sub stream), decoded
+    with FFmpeg through PyAV for the least delay:
+    - no input buffering (`fflags=nobuffer`, `max_delay=0`) and a low-delay decoder;
+    - slice threads only (frame threads would hold frames back);
+    - the newest frame kept, as with NDI.
+    Reconnects when the stream stops. Measured: frames, arrival gaps, decode time per frame, and
+    damaged or undecodable frames (counted as dropped, like NDI's)."""
+
+    OPTIONS = {"fflags": "nobuffer", "max_delay": "0", "probesize": "500000", "analyzeduration": "500000"}
+
+    def __init__(self, url: str, transport: str = "tcp", loop: bool = False, timeout: float = 5.0):
+        self.url, self.transport, self.loop, self.timeout = url, transport, loop, timeout
+        self.source_name = re.sub(r"//[^/@]+@", "//", url)  # never show a password from the URL
+        self.frames_received = 0
+        self.arrivals: deque[float] = deque(maxlen=32)
+        self.ndi_frames_total = self.ndi_frames_dropped = 0  # frames the stream brought / that were damaged
+        self.decode_times: deque[float] = deque(maxlen=64)  # ms per frame (decoding and converting to BGR)
+        self.connected = False
+        self.last_error = ""
+        self.size = (0, 0)
+        self.codec = ""
+        self._latest: Frame | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def decode_ms(self) -> float | None:
+        return round(statistics.median(self.decode_times), 2) if self.decode_times else None
+
+    def start(self, timeout: float = 5.0) -> None:
+        """Starts the reader; connecting happens there (and again whenever the stream stops), so a
+        camera that is still booting doesn't hold anything up."""
+        self._thread = threading.Thread(target=self._run, name=f"stream:{self.source_name}", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=self.timeout + 1.0)
+
+    def latest(self) -> Frame | None:
+        with self._lock:
+            return self._latest
+
+    def _run(self) -> None:
+        import av
+
+        options = {**self.OPTIONS}
+        if self.url.lower().startswith("rtsp"):
+            options["rtsp_transport"] = self.transport
+        while not self._stop.is_set():
+            try:
+                container = av.open(self.url, options=options, timeout=(self.timeout, self.timeout))
+            except (av.FFmpegError, OSError) as e:
+                self.last_error = f"can't open {self.source_name}: {e}"
+                self._stop.wait(2.0)
+                continue
+            try:
+                self._read(container)
+            except (av.FFmpegError, OSError) as e:
+                self.last_error = f"{self.source_name}: {e}"
+            finally:
+                self.connected = False
+                container.close()
+            if not self.loop:
+                self._stop.wait(1.0)  # the camera rebooted or the network dropped: open it again
+
+    def _read(self, container) -> None:
+        import av
+
+        stream = container.streams.video[0]
+        stream.thread_type = "SLICE"
+        stream.codec_context.flags |= av.codec.context.Flags.low_delay
+        self.codec = stream.codec_context.name
+        for packet in container.demux(stream):
+            if self._stop.is_set():
+                return
+            if packet.size == 0:
+                continue
+            self.ndi_frames_total += 1
+            t0 = time.perf_counter()
+            try:
+                frames = packet.decode()
+            except av.error.InvalidDataError:
+                self.ndi_frames_dropped += 1
+                continue
+            if packet.is_corrupt:
+                self.ndi_frames_dropped += 1
+            for frame in frames:
+                image = frame.to_ndarray(format="bgr24")
+                arrived, exact = time.monotonic(), time.perf_counter()
+                self.decode_times.append((exact - t0) * 1000)
+                self.frames_received += 1
+                self.arrivals.append(exact)
+                self.size = (image.shape[1], image.shape[0])
+                self.connected, self.last_error = True, ""
+                with self._lock:
+                    self._latest = Frame(image, arrived, 0.0, self.frames_received, exact)
+
+
 def capture_devices(count: int = 6) -> list[dict]:
     """Capture devices that open, by DirectShow number, with the picture size they give.
     (Opening a device can switch on a webcam's light for a moment.)"""
@@ -144,9 +249,11 @@ def capture_devices(count: int = 6) -> list[dict]:
     return found
 
 
-def open_source(cfg: SourceConfig) -> NdiReceiver | FileSource:
+def open_source(cfg: SourceConfig) -> NdiReceiver | FileSource | StreamSource:
     if cfg.kind == "file":
         return FileSource(cfg.name, cfg.loop)
     if cfg.kind == "capture":
         return CaptureSource(int(cfg.name or 0))
+    if cfg.kind == "stream":
+        return StreamSource(cfg.name, cfg.transport, loop=cfg.loop and not cfg.name.lower().startswith("rtsp"))
     return NdiReceiver(cfg.name, low_bandwidth=cfg.low_bandwidth)

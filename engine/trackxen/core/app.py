@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from trackxen.control.camera import CameraLink, CameraLinkConfig
-from trackxen.core.config import AppConfig, DetectionSettings, data_dir, engine_cache_dir, models_dir
+from trackxen.core.config import AppConfig, CameraConfig, DetectionSettings, data_dir, engine_cache_dir, models_dir
 from trackxen.core.faces import FaceManager
 from trackxen.core.gpu_libs import GpuLibraries
 from trackxen.core.live_inputs import LiveInputs
@@ -33,6 +33,15 @@ LIVE_CAMERA_FIELDS = {"slots", "active_slot", "preset_links", "faces", "vmix_inp
 def _camera_setup(config: AppConfig) -> list[dict]:
     """The camera settings that need the camera connections restarted when they change."""
     return [c.model_dump(exclude=LIVE_CAMERA_FIELDS) for c in config.cameras]
+
+
+def source_config(cam: CameraConfig, low_bandwidth: bool = False) -> SourceConfig:
+    """Where the vision worker takes this camera's picture from."""
+    if cam.video == "capture":
+        return SourceConfig(cam.id, "capture", str(cam.capture_device))
+    if cam.video == "stream":
+        return SourceConfig(cam.id, "stream", cam.video_url, transport=cam.stream_transport)
+    return SourceConfig(cam.id, "ndi", cam.ndi, cam.low_bandwidth or low_bandwidth)
 
 
 def _resolve_host(host_name: str) -> str:
@@ -102,8 +111,11 @@ class App:
     async def _start_cameras(self) -> None:
         for cam in self.config.cameras:
             link = CameraLink(cam.id, CameraLinkConfig(
-                host=cam.host, visca_port=cam.visca_port, freed_port=cam.freed_port, use_header=cam.use_header,
-                units_per_degree=cam.units_per_degree, pan_sign=cam.pan_sign, tilt_sign=cam.tilt_sign),
+                host=cam.host, visca_port=cam.visca_port, freed_port=cam.freed_port, transport=cam.visca_transport,
+                units_per_degree=cam.units_per_degree, tilt_units_per_degree=cam.tilt_units_per_degree,
+                pan_sign=cam.pan_sign, tilt_sign=cam.tilt_sign,
+                # the speed tables have one entry per VISCA speed step the camera has
+                pan_speed_max=len(cam.pan_speeds), tilt_speed_max=len(cam.tilt_speeds)),
                 counters=self.counters, log=self.log)
             if cam.host:
                 try:
@@ -193,9 +205,8 @@ class App:
         preset = self.active_preset()
         model = self.config.model_override or f"{preset.model}-{preset.imgsz}"
         cfg = WorkerConfig(
-            sources=[SourceConfig(c.id, "capture", str(c.capture_device)) if c.video == "capture" else
-                     SourceConfig(c.id, "ndi", c.ndi, c.low_bandwidth or preset.low_bandwidth)
-                     for c in self.config.cameras if c.video == "capture" or c.ndi],
+            sources=[source_config(c, preset.low_bandwidth) for c in self.config.cameras
+                     if c.video == "capture" or (c.video == "stream" and c.video_url) or (c.video == "ndi" and c.ndi)],
             model_dir=str(self.models), cache_dir=str(engine_cache_dir()), model_name=model,
             engines=tuple(self.config.engines),
             gpu_libs=str(self.gpu_libs.dir) if self.gpu_libs and self.gpu_libs.ready else "",
@@ -258,6 +269,8 @@ class App:
                 self.limits.expected_fps[msg["camera"]] = min(source_fps, limit) if limit > 0 else source_fps
             self.counters.set(f"{msg['camera']}.ndi_dropped_total", msg.get("ndi_dropped", 0))
             self.counters.set(f"{msg['camera']}.ndi_frames_total", msg.get("ndi_total", 0))
+            if msg.get("decode_ms") is not None:  # a network stream (RTSP): decoding time per frame
+                self.counters.set(f"{msg['camera']}.stream_decode_ms", msg["decode_ms"])
         elif kind == "ready":
             self.worker_pid = msg["pid"]
             self.sampler.app_pids.add(msg["pid"])
@@ -495,6 +508,49 @@ class App:
             found.append(entry)
         mixers = [m.__dict__ for m in await xair.discover(timeout=1.5)]
         return {"ndi": found, "mixers": mixers}
+
+    async def test_camera(self, cam: CameraConfig) -> dict:
+        """Settings -> Cameras "Test camera": does it answer VISCA (and where does it point), and does its
+        network stream play (size, codec, frame rate, decode time)? Everything here is measured."""
+        from trackxen.devices import visca
+        from trackxen.vision.sources import StreamSource
+
+        result: dict = {"visca": None, "video": None}
+        if cam.host:
+            client = visca.open_client(cam.host, cam.visca_port, cam.visca_transport, timeout=1.0)
+            try:
+                await client.connect()
+                t0 = time.perf_counter()
+                pan, tilt = await client.pan_tilt_position()
+                rtt = (time.perf_counter() - t0) * 1000
+                zoom = await client.zoom_position()
+                result["visca"] = {"ok": True, "rtt_ms": round(rtt, 1), "pan": round(pan / cam.units_per_degree, 1),
+                                   "tilt": round(tilt / (cam.tilt_units_per_degree or cam.units_per_degree), 1),
+                                   "zoom": zoom}
+            except (visca.ViscaError, OSError, ValueError) as e:
+                result["visca"] = {"ok": False, "error": str(e) or type(e).__name__}
+            finally:
+                client.close()
+        if cam.video == "stream" and cam.video_url:
+            def play() -> dict:
+                src = StreamSource(cam.video_url, cam.stream_transport, timeout=4.0)
+                src.start()
+                deadline = time.monotonic() + 8.0
+                while time.monotonic() < deadline and src.frames_received < 45:
+                    if src.last_error and not src.connected and time.monotonic() > deadline - 4.0:
+                        break  # 4 seconds of failing to connect: report that
+                    time.sleep(0.05)
+                arrivals = list(src.arrivals)
+                fps = (len(arrivals) - 1) / (arrivals[-1] - arrivals[0]) if len(arrivals) > 2 else 0.0
+                src.stop()
+                if not src.frames_received:
+                    return {"ok": False, "error": src.last_error or "no picture within 8 seconds", "url": src.source_name}
+                return {"ok": True, "url": src.source_name, "width": src.size[0], "height": src.size[1],
+                        "codec": src.codec, "fps": round(fps, 1), "decode_ms": src.decode_ms,
+                        "damaged": src.ndi_frames_dropped}
+
+            result["video"] = await asyncio.to_thread(play)
+        return result
 
     def run_hardware_test(self, cameras: int, fps: float, shared_with_vmix: bool, quick: bool) -> bool:
         """Start the hardware test in the background (progress lines appear in self.hwtest)."""

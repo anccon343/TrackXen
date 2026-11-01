@@ -1,8 +1,8 @@
 # PyInstaller build of TrackXen.exe (one folder):  .venv\Scripts\python -m PyInstaller packaging\trackxen.spec --noconfirm
 #
 # Ships: the engine, the web UI (build it first: cd ui && npm run build), the models of the four
-# performance presets plus the face models, ONNX Runtime and the NDI runtime that comes with
-# cyndilib. NVIDIA's CUDA, cuDNN and TensorRT DLLs are NOT shipped (4 GB): the app downloads the
+# performance presets plus the face models, ONNX Runtime, the NDI runtime that comes with cyndilib,
+# and PyAV's FFmpeg (network streams). NVIDIA's CUDA, cuDNN and TensorRT DLLs are NOT shipped (4 GB): the app downloads the
 # ones a PC needs on its first start (core/gpu_libs.py, from the list in core/assets/gpu-libs.json
 # that tools/gpu_libs_manifest.py writes). They are kept out here even where PyInstaller would
 # pull them in as dependencies of ONNX Runtime's GPU providers.
@@ -36,7 +36,7 @@ datas += [(os.path.join(ROOT, "models", m), "models") for m in MODELS]
 binaries = []
 hiddenimports = (collect_submodules("uvicorn") + ["win32pdh", "pynvml"]
                  + collect_submodules("trackxen", filter=lambda name: not name.startswith("trackxen.sim")))
-for package in ("cyndilib", "onnxruntime"):
+for package in ("cyndilib", "onnxruntime", "av"):
     d, b, h = collect_all(package)
     datas += d
     binaries += b

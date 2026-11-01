@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from trackxen.core import logview
 from trackxen.core.access import COOKIE, HEADER, LOCAL, AccessGuard
 from trackxen.core.app import App
-from trackxen.core.config import AppConfig
+from trackxen.core.config import AppConfig, CameraConfig
 from trackxen.core.performance import PRESETS
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -149,6 +149,22 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         from trackxen.core.hwtest import system_info
 
         return await asyncio.to_thread(system_info)
+
+    @api.get("/api/camera-models")
+    async def camera_models():
+        """The camera types and the settings each starts with (core/camera_models.py)."""
+        from trackxen.core.camera_models import MODELS, camera_defaults
+
+        return {key: {"name": m["name"], "about": m["about"], "estimate": m["estimate"],
+                      "defaults": camera_defaults(key)} for key, m in MODELS.items()}
+
+    @api.post("/api/camera-test", dependencies=guarded)
+    async def camera_test(body: dict):
+        try:
+            cam = CameraConfig.model_validate(body)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
+        return await app.test_camera(cam)
 
     @api.get("/api/capture-devices")
     async def capture_devices():

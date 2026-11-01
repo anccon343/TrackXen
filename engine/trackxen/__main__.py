@@ -31,11 +31,15 @@ def main() -> int:
     p.add_argument("--config", type=Path, default=data_dir() / "settings.json")
     p.add_argument("--sim", action="store_true", help="use the virtual camera from tools/sim_camera.py")
     p.add_argument("--sim-cameras", type=int, default=1, help="with --sim: how many virtual cameras (1-4)")
+    p.add_argument("--sim-ptzoptics", type=int, default=0,
+                   help="with --sim: how many of them (the last ones) are PTZOptics G2 (sim_camera.py --ptzoptics)")
     p.add_argument("--port", type=int)
     args = p.parse_args()
     if args.sim:  # separate settings file, so simulator settings never overwrite the real ones
-        path = data_dir() / ("settings-sim.json" if args.sim_cameras <= 1 else f"settings-sim{args.sim_cameras}.json")
-        cfg = AppConfig.load(path) if path.exists() else sim_config(args.sim_cameras)
+        name = "settings-sim" + (str(args.sim_cameras) if args.sim_cameras > 1 else "")
+        name += f"-ptz{args.sim_ptzoptics}" if args.sim_ptzoptics else ""
+        path = data_dir() / f"{name}.json"
+        cfg = AppConfig.load(path) if path.exists() else sim_config(args.sim_cameras, args.sim_ptzoptics)
     else:
         path = args.config
         cfg = AppConfig.load(path)

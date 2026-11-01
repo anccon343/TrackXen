@@ -154,8 +154,16 @@ def shooting_range(api: Api) -> tuple[bool, str]:
     return ok, f"rightmost picture edge {max(edges):.2f} (limit 12)" if edges else "no samples"
 
 
+CAMERA = {"host": "127.0.0.1", "port": visca.VISCA_PORT, "transport": "sony"}  # the camera under test (main())
+
+
+def camera_client() -> visca.ViscaClient:
+    """A second VISCA controller for the camera under test, speaking its kind of VISCA (like vMix would)."""
+    return visca.open_client(CAMERA["host"], CAMERA["port"], CAMERA["transport"])
+
+
 async def _drive(pan_dir: visca.PanDir, seconds: float) -> None:
-    async with visca.ViscaClient("127.0.0.1") as other:  # another controller, like vMix
+    async with camera_client() as other:  # another controller, like vMix
         await other.command(visca.pan_tilt_drive(8, 1, pan_dir, visca.TiltDir.STOP))
         await asyncio.sleep(seconds)
         await other.command(visca.pan_tilt_stop())
@@ -178,7 +186,7 @@ def manual(api: Api) -> tuple[bool, str]:
 
 
 async def _store_preset(number: int) -> None:
-    async with visca.ViscaClient("127.0.0.1") as client:
+    async with camera_client() as client:
         await client.command(visca.preset_set(number - 1))  # VISCA counts presets from 0
 
 
@@ -335,6 +343,7 @@ SCENARIOS = {"auto_select": auto_select, "fixed": fixed, "halting": halting, "ra
 
 
 def main(args) -> int:
+    global LENS
     api = Api(args.port)
     for _ in range(60):
         try:
@@ -345,6 +354,12 @@ def main(args) -> int:
     else:
         print("TrackXen is not answering")
         return 1
+    cam_cfg = next(c for c in api.get("/api/config")["cameras"] if c["id"] == api.camera)
+    LENS = Lens(cam_cfg["lens"]["hfov_wide"], cam_cfg["lens"]["hfov_tele"], cam_cfg["lens"]["zoom_max"])
+    CAMERA.update(host=cam_cfg["host"] or "127.0.0.1", port=cam_cfg["visca_port"],
+                  transport=cam_cfg.get("visca_transport", "sony"))
+    print(f"camera {api.camera}: {cam_cfg.get('model', 'birddog_p400')}, VISCA {cam_cfg.get('visca_transport', 'sony')}, "
+          f"FreeD {'port ' + str(cam_cfg['freed_port']) if cam_cfg.get('freed_port') else 'off'}", flush=True)
     unknown = [n for n in args.names if n not in SCENARIOS]
     if unknown:
         print(f"unknown scenario(s) {unknown}; choose from {list(SCENARIOS)}")

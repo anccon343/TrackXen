@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { getJSON, live, postJSON } from "../lib/live.svelte";
   import { settings } from "../lib/config.svelte";
+  import { cameraTypes, describeTest } from "../lib/cameraTypes.svelte";
   import { ui } from "../lib/ui.svelte";
 
   // First start on a new PC (no cameras yet): check the PC, let the GPU engine get ready, find
@@ -38,18 +40,45 @@
     }
   }
 
+  // Cameras without NDI (PTZOptics): added by IP address, video from their own network stream
+  let ipAddress = $state("");
+  let ipType = $state("ptzoptics_g2");
+  let byAddress = $state<{ host: string; model: string }[]>([]);
+  let ipTest = $state<string[] | "running" | null>(null);
+  let picked = $derived(found.filter((f) => chosen[f.ndi]).length + byAddress.length);
+  onMount(() => cameraTypes.load());
+
+  async function testAddress() {
+    ipTest = "running";
+    try {
+      ipTest = describeTest(await cameraTypes.test(cameraTypes.create(ipType, 1, ipAddress.trim())));
+    } catch (e) {
+      ipTest = [`Test failed: ${e}`];
+    }
+  }
+
+  function keepAddress() {
+    byAddress = [...byAddress, { host: ipAddress.trim(), model: ipType }];
+    ipAddress = "";
+    ipTest = null;
+  }
+
   async function addCameras() {
-    const picks = found.filter((f) => chosen[f.ndi]).slice(0, 4);
-    if (!picks.length) return;
+    const picks = found.filter((f) => chosen[f.ndi]);
+    if (!picks.length && !byAddress.length) return;
     adding = true;
     try {
       await settings.load();
-      settings.draft!.cameras = picks.map((f, i) => ({
-        id: `cam${i + 1}`, name: f.birddog?.HostName || `Camera ${i + 1}`, ndi: f.ndi, host: f.host,
-        visca_port: 52381, freed_port: 40001 + i, video_delay: 0.08, low_bandwidth: false,
-      }));
+      type Pick = { model: string; host: string; ndi?: string; name?: string };
+      const ndi: Pick[] = picks.map((f) => ({ model: f.birddog ? "birddog_p400" : "other", host: f.host, ndi: f.ndi,
+                                              name: f.birddog?.HostName }));
+      settings.draft!.cameras = [...ndi, ...byAddress].slice(0, 4).map((c: Pick, i) => {
+        const cam = cameraTypes.create(c.model, i + 1, c.host);
+        if (c.ndi) Object.assign(cam, { ndi: c.ndi, video: "ndi", name: c.name || cam.name });
+        return cam;
+      });
       await settings.apply();
-      ui.notify(`${picks.length} camera${picks.length > 1 ? "s" : ""} added`);
+      ui.notify(`${settings.draft!.cameras.length} camera(s) added`);
     } finally {
       adding = false;
     }
@@ -137,10 +166,24 @@
         <span><b>{f.ndi}</b><br /><span class="dim">{f.host || "address unknown"}{f.birddog ? ` · BirdDog ${f.birddog.FirmwareVersion ?? ""}` : ""}</span></span>
       </label>
     {/each}
-    {#if found.length}
-      <button class="primary" onclick={addCameras} disabled={adding || !Object.values(chosen).some(Boolean)}>
-        {adding ? "Adding…" : `Add ${Object.values(chosen).filter(Boolean).length} camera(s)`}</button>
-      <p class="dim">Up to 4. For exact positions set each camera's FreeD output to this PC (BirdUI → CamControl → FreeD);
+    <h3>Cameras without NDI (PTZOptics)</h3>
+    <p class="dim">Added by their IP address; TrackXen takes their video from the camera's own network stream.</p>
+    <div class="row">
+      <input type="text" bind:value={ipAddress} placeholder="Camera IP, e.g. 192.168.1.60" />
+      <select bind:value={ipType}>
+        {#each Object.entries(cameraTypes.list) as [key, t]}<option value={key}>{t.name}</option>{/each}
+      </select>
+      <button onclick={testAddress} disabled={!ipAddress.trim() || ipTest === "running"}>{ipTest === "running" ? "Testing…" : "Test"}</button>
+      <button onclick={keepAddress} disabled={!ipAddress.trim() || picked >= 4}>Add to the list</button>
+    </div>
+    {#if Array.isArray(ipTest)}<div class="dim">{#each ipTest as line}<div>{line}</div>{/each}</div>{/if}
+    {#each byAddress as c, i (i)}
+      <div class="found"><span><b>{c.host}</b> · {cameraTypes.list[c.model]?.name ?? c.model}</span>
+        <button onclick={() => (byAddress = byAddress.filter((_, j) => j !== i))}>Remove</button></div>
+    {/each}
+    {#if picked}
+      <button class="primary" onclick={addCameras} disabled={adding}>{adding ? "Adding…" : `Add ${Math.min(4, picked)} camera(s)`}</button>
+      <p class="dim">Up to 4. For exact positions set each P400's FreeD output to this PC (BirdUI → CamControl → FreeD);
         Settings → Cameras shows the ports.</p>
     {/if}
   </section>
@@ -172,5 +215,8 @@
   .found { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #333; }
   .found input { min-height: 0; margin-top: 4px; accent-color: var(--accent); }
   .warn { color: var(--yellow); font-size: 13px; }
+  h3 { font-size: 14px; margin: 16px 0 4px; }
+  .row input { flex: 1; min-width: 180px; }
+  .found { justify-content: space-between; align-items: center; }
   section > button { margin-top: 8px; }
 </style>

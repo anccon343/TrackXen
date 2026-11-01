@@ -161,6 +161,47 @@ Other things that change with capture input:
   and compares when FreeD reports the move with when the picture moves, then uses that delay in the
   control loop. Worth doing for NDI too.
 
+### 1.9 PTZOptics G2 (PT20X-SDI-GY-G2), researched 2026-11-01
+
+**Control**
+- PTZOptics takes plain VISCA, without the 8-byte Sony header, on UDP 1259 or TCP 5678; both ports can
+  be changed in the web page ([PTZOptics: IP control](https://docs.ptzoptics.com/articles/miscellaneous/misc-cameras/an-introduction-to-ip-control-&-scripting-for-ptzoptics-cameras)).
+  Some firmware also offers Sony VISCA over IP on 52381 (reported for G3: [firmware changelog](https://ptzoptics.com/firmware-changelog)).
+- The camera reportedly accepts one IP control connection at a time
+  ([vMix forum](https://forums.vmix.com/posts/m56364-vMix-Cannot-Connect-To-PTZ)). TCP would compete with
+  vMix or a joystick, so TrackXen uses UDP.
+- **Commands** ([VISCA API: movement](https://docs.ptzoptics.com/dev/visca-api/movement),
+  [inquiries](https://docs.ptzoptics.com/dev/visca-api/inquiries)):
+  - pan speed 0x01-0x18, tilt speed 0x01-0x14 (the P400 goes to 0x17), zoom speed 0-7
+  - absolute/relative position `81 01 06 02/03 VV WW 0Y0Y0Y0Y 0Z0Z0Z0Z FF`
+  - zoom position inquiry `81 09 04 47 FF` → `90 50 0p 0q 0r 0s FF`
+  - pan/tilt position inquiry `81 09 06 12 FF` ([PT limits guide](https://docs.ptzoptics.com/articles/miscellaneous/misc-cameras/pt-limits-packet-sender))
+  - an inquiry answers on socket 0 without an ACK; commands get an ACK and then a completion on
+    socket 1 or 2
+- **Not published:** the position units per degree and the zoom range. `tools/visca_probe.py calibrate`
+  measures them from the end stops: data sheet pan ±170°, tilt -30°..+90°; field of view 60.7° wide to
+  3.36° tele; pan 1.7-100°/s, tilt up to ~70°/s
+  ([Markertek](https://www.markertek.com/product/ptz-pt20xsdigyg2/ptzoptics-20x-optical-zoom-hd-sdi-hdmi-ip-network-rj45-cvbs-1920-x-1080p-60-7-degree-fov-gray-us-style-power)).
+- **No FreeD on G2:** FreeD came with newer models such as the Move 4K ([PTZOptics: FreeD](https://www.ptzoptics.com/freed/)),
+  so the position is polled over VISCA (20 Hz).
+- **Found in the simulator:** without the IP header's sequence numbers, a command's completion that
+  arrives late was taken as the answer to the next position question (73 times in 2 minutes). Fixed by
+  matching replies the way VISCA defines them: answers on socket 0 with data; completions on the
+  command's socket.
+
+**Video**
+- `rtsp://IP:554/1` is the main stream and `/2` the sub stream, with no login by default
+  ([spec sheet](https://www.fullcompass.com/common/files/46399-PT20XSDISpecSheet.pdf)). Users report
+  noticeable RTSP delay but publish no figures ([PTZOptics forum](https://help.ptzoptics.com/support/discussions/topics/13000022944)),
+  so `tools/stream_probe.py --delay` measures it.
+- **Decoding:** FFmpeg's low-delay options (no input buffering, `max_delay=0`, low-delay decoder) are
+  set through PyAV; OpenCV's environment-variable route for them is reported unreliable
+  ([OpenCV forum](https://forum.opencv.org/t/rtsp-ffmpeg-set-flags/14382)). Others brought RTSP delay from
+  ~550 ms to ~100 ms with `low_delay` ([FFmpeg users](https://ffmpeg.org/pipermail/ffmpeg-user/2024-November/058823.html)).
+  Slice threads only: frame threads hold frames back.
+- **The quickest way in:** SDI into vMix, then vMix's NDI output, or an SDI capture card on the
+  TrackXen PC. Both are already supported.
+
 ---
 
 ## 2. Recognition models

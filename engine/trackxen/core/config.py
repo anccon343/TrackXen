@@ -9,7 +9,7 @@ from pathlib import Path
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from trackxen.control.controller import DEFAULT_PAN_SPEEDS, DEFAULT_TILT_SPEEDS, Framing, Motion
 from trackxen.core.tracking_settings import SLOTS, AppSettings, PresetLink, default_slots
@@ -56,14 +56,18 @@ class FaceRef(BaseModel):
 class CameraConfig(BaseModel):
     id: str = "cam1"
     name: str = "Camera 1"
-    video: Literal["ndi", "capture"] = "ndi"  # where the picture comes from (control is always over IP)
+    model: Literal["birddog_p400", "ptzoptics_g2", "other"] = "birddog_p400"  # core/camera_models.py
+    video: Literal["ndi", "capture", "stream"] = "ndi"  # where the picture comes from (control is always over IP)
     ndi: str = ""  # NDI source name, or a unique part of it
     capture_device: int = Field(0, ge=0, le=15)  # HDMI/SDI capture device number (video "capture")
+    stream_url: str = ""  # video "stream": the camera's RTSP address ("" = its default, e.g. rtsp://IP:554/1)
+    stream_transport: Literal["tcp", "udp"] = "tcp"  # how the RTSP stream's packets travel
     host: str = ""  # camera IP for VISCA
+    visca_transport: Literal["sony", "udp", "tcp"] = "sony"  # Sony VISCA over IP (header), plain VISCA over UDP or TCP
     visca_port: int = 52381
     freed_port: int | None = None  # UDP port this PC receives the camera's FreeD on
-    use_header: bool = True
-    units_per_degree: float = 16.0  # VISCA position units per degree (calibrated)
+    units_per_degree: float = 16.0  # VISCA position units per degree, pan (calibrated)
+    tilt_units_per_degree: float | None = None  # ... tilt, when it differs from pan
     pan_sign: int = 1
     tilt_sign: int = 1
     video_delay: float = 0.08  # seconds from capture to arrival here (calibrated)
@@ -79,6 +83,21 @@ class CameraConfig(BaseModel):
     preset_links: dict[int, PresetLink] = Field(default_factory=dict)  # preset number (1..) -> behaviour
     faces: list[FaceRef] = Field(default_factory=list, max_length=7)  # registered faces, highest priority first
     vmix_input: str = ""  # the vMix input showing this camera (input key; its number also works)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _old_header_setting(cls, data):
+        """Settings from before camera types had `use_header`: false meant plain VISCA over UDP."""
+        if isinstance(data, dict) and data.get("use_header") is False and "visca_transport" not in data:
+            data = {**data, "visca_transport": "udp"}
+        return data
+
+    @property
+    def video_url(self) -> str:
+        """The RTSP address actually used for video "stream"."""
+        from trackxen.core.camera_models import stream_url
+
+        return self.stream_url or stream_url(self.model, self.host)
 
     @property
     def slot(self) -> AppSettings:
@@ -145,10 +164,20 @@ class AppConfig(BaseModel):
         tmp.replace(path)
 
 
-def sim_config(cameras: int = 1) -> AppConfig:
+def sim_config(cameras: int = 1, ptzoptics: int = 0) -> AppConfig:
     """Settings for the virtual cameras started by tools/sim_camera.py (camera k: NDI "TRACKXEN SIM k",
-    VISCA port 52380 + k, FreeD to port 40000 + k)."""
-    return AppConfig(cameras=[
-        CameraConfig(id=f"cam{k}", name=f"Sim camera {k}", ndi=f"TRACKXEN SIM {k}", host="127.0.0.1",
-                     visca_port=52380 + k, freed_port=40000 + k, video_delay=0.08)
-        for k in range(1, cameras + 1)])
+    VISCA port 52380 + k, FreeD to port 40000 + k). The last `ptzoptics` cameras are set up as PTZOptics
+    G2 (start those with sim_camera.py --ptzoptics): plain VISCA, no FreeD, that type's units and
+    speeds; their video stays NDI."""
+    from trackxen.core.camera_models import camera_defaults
+
+    out = []
+    for k in range(1, cameras + 1):
+        if k > cameras - ptzoptics:
+            fields = {**camera_defaults("ptzoptics_g2", k), "video": "ndi", "video_delay": 0.08}
+            out.append(CameraConfig(id=f"cam{k}", name=f"Sim PTZOptics {k}", ndi=f"TRACKXEN SIM {k}",
+                                    host="127.0.0.1", **{**fields, "visca_port": 52380 + k}))
+        else:
+            out.append(CameraConfig(id=f"cam{k}", name=f"Sim camera {k}", ndi=f"TRACKXEN SIM {k}", host="127.0.0.1",
+                                    visca_port=52380 + k, freed_port=40000 + k, video_delay=0.08))
+    return AppConfig(cameras=out)

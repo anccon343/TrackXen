@@ -1,8 +1,9 @@
 """One camera's control connection: VISCA commands out, position (FreeD) in.
 
 - Position comes from FreeD (every frame) with a short history, so the tracker can ask
-  where the camera pointed when a video frame was captured. Without FreeD it polls the
-  camera over VISCA instead.
+  where the camera pointed when a video frame was captured. Without FreeD (PTZOptics G2) it
+  polls the camera over VISCA instead, `poll_hz` times a second.
+- Speeds are kept within the camera's own range (a PTZOptics tilts at most at step 0x14).
 - Movement requests are coalesced: only the newest wanted speed is sent, and only when
   it changes, so a slow camera never builds a queue of stale commands.
 - VISCA round-trip times, errors and FreeD traffic are measured into the statistics.
@@ -32,18 +33,26 @@ class CameraLinkConfig:
     host: str
     visca_port: int = visca.VISCA_PORT
     freed_port: int | None = None
-    use_header: bool = True
-    units_per_degree: float = 16.0  # VISCA position units per degree (only used without FreeD)
+    transport: str = "sony"  # VISCA: "sony" (header, UDP), "udp" (plain) or "tcp" (plain), see devices/visca.py
+    units_per_degree: float = 16.0  # VISCA position units per degree, pan (only used without FreeD)
+    tilt_units_per_degree: float | None = None  # ... tilt, if it differs
     pan_sign: int = 1  # -1 if "pan right" makes FreeD pan go down on this camera
     tilt_sign: int = 1
+    pan_speed_max: int = visca.PAN_SPEED_MAX  # the camera's fastest VISCA speed step
+    tilt_speed_max: int = visca.TILT_SPEED_MAX
     send_hz: float = 30.0
+    poll_hz: float = 20.0  # position inquiries per second without FreeD
+
+    @property
+    def tilt_units(self) -> float:
+        return self.tilt_units_per_degree or self.units_per_degree
 
 
 class CameraLink:
     def __init__(self, name: str, cfg: CameraLinkConfig, counters=None, log=None):
         self.name, self.cfg = name, cfg
         self.counters, self.log = counters, log
-        self.visca = visca.ViscaClient(cfg.host, cfg.visca_port, timeout=0.5, use_header=cfg.use_header)
+        self.visca = visca.open_client(cfg.host, cfg.visca_port, cfg.transport, timeout=0.5)
         self.history: deque[Pose] = deque(maxlen=600)
         self.last_freed = 0.0
         self.visca_ok = False
@@ -106,9 +115,9 @@ class CameraLink:
         self._count("freed_packets")
 
     async def _poll_loop(self) -> None:
-        """Without fresh FreeD, ask the camera for its position over VISCA (~15 times a second)."""
+        """Without fresh FreeD, ask the camera for its position over VISCA (`poll_hz` times a second)."""
         while True:
-            await asyncio.sleep(1 / 15)
+            await asyncio.sleep(1 / self.cfg.poll_hz)
             if self.freed_age < 0.5:
                 continue
             try:
@@ -116,9 +125,9 @@ class CameraLink:
                 pan, tilt = await self.visca.pan_tilt_position()
                 zoom = await self.visca.zoom_position()
                 self.history.append(Pose((t0 + time.monotonic()) / 2, pan / self.cfg.units_per_degree,
-                                         tilt / self.cfg.units_per_degree, float(zoom)))
+                                         tilt / self.cfg.tilt_units, float(zoom)))
                 self._count("position_polls")
-            except (visca.ViscaError, OSError) as e:
+            except (visca.ViscaError, OSError, ValueError) as e:  # (ValueError: a garbled reply)
                 self._failed(e)
             except Exception as e:  # noqa: BLE001 - never let the position loop die silently
                 self._unexpected("position poll", e)
@@ -163,10 +172,11 @@ class CameraLink:
         async with self._motion:
             self._want = self._sent = (0, 0, 0)
             self.last_motion = time.monotonic()
-            u = self.cfg.units_per_degree
-            tilt_speed = min(23, pan_speed if tilt_speed is None else tilt_speed)
-            await self.visca.command(visca.pan_tilt_absolute(round(pan * u * self.cfg.pan_sign),
-                                                             round(tilt * u * self.cfg.tilt_sign), pan_speed, tilt_speed))
+            pan_speed = min(self.cfg.pan_speed_max, pan_speed)
+            tilt_speed = min(self.cfg.tilt_speed_max, pan_speed if tilt_speed is None else tilt_speed)
+            await self.visca.command(visca.pan_tilt_absolute(round(pan * self.cfg.units_per_degree * self.cfg.pan_sign),
+                                                             round(tilt * self.cfg.tilt_units * self.cfg.tilt_sign),
+                                                             pan_speed, tilt_speed))
             if zoom is not None:
                 await self.visca.command(visca.zoom_direct(round(zoom)))
 
@@ -205,7 +215,8 @@ class CameraLink:
         tilt_step *= self.cfg.tilt_sign
         pan_dir = visca.PanDir.RIGHT if pan_step > 0 else visca.PanDir.LEFT if pan_step < 0 else visca.PanDir.STOP
         tilt_dir = visca.TiltDir.UP if tilt_step > 0 else visca.TiltDir.DOWN if tilt_step < 0 else visca.TiltDir.STOP
-        return visca.pan_tilt_drive(max(1, abs(pan_step)), max(1, abs(tilt_step)), pan_dir, tilt_dir)
+        return visca.pan_tilt_drive(max(1, min(abs(pan_step), self.cfg.pan_speed_max)),
+                                    max(1, min(abs(tilt_step), self.cfg.tilt_speed_max)), pan_dir, tilt_dir)
 
     async def _timed(self, msg: bytes) -> None:
         t0 = time.perf_counter()
@@ -230,7 +241,7 @@ class CameraLink:
 
     async def _reconnect(self) -> None:
         old = self.visca
-        self.visca = visca.ViscaClient(self.cfg.host, self.cfg.visca_port, timeout=0.5, use_header=self.cfg.use_header)
+        self.visca = visca.open_client(self.cfg.host, self.cfg.visca_port, self.cfg.transport, timeout=0.5)
         old.close()
         try:
             await self.visca.connect()

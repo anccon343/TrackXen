@@ -44,11 +44,12 @@
         <tr>
           <th>Camera</th><th>State</th><th title="Frame rate measured from arrival times">Source</th>
           <th title="Arrival gaps of the last frames in ms, like vMix's Video column">Video (ms)</th>
-          <th title="Frames NDI reports as dropped since the last Reset">Source dropped</th>
+          <th title="Frames NDI reports as dropped since the last Reset (network streams: damaged frames)">Source dropped</th>
           <th title="Frames that arrived while the detector was still busy">Detector skipped</th>
           <th>Detections</th><th>Detect time p50 / p95</th><th title="Frame arrival to detection result">Frame → result</th>
           <th title="VISCA command to camera acknowledgement">VISCA round trip</th><th>VISCA errors</th>
-          <th>FreeD</th><th>Targets lost</th><th>Re-found</th><th>Watchdog stops</th>
+          <th title="FreeD packets, or (cameras without FreeD) position questions over VISCA">Position</th>
+          <th>Targets lost</th><th>Re-found</th><th>Watchdog stops</th>
         </tr>
       </thead>
       <tbody>
@@ -57,7 +58,7 @@
           <tr>
             <td>{c.name}</td>
             <td><span class="badge state-{c.state}">{c.state.replace("_", " ")}</span></td>
-            <td>{fmt(k("source_fps"))} fps</td>
+            <td>{fmt(k("source_fps"))} fps{k("stream_decode_ms") !== undefined ? `, decode ${fmt(k("stream_decode_ms"))} ms` : ""}</td>
             <td>{(c.source?.gaps_ms ?? []).join(" ") || "–"}</td>
             <td>{c.ndi_dropped} / {c.ndi_total}</td>
             <td>{fmt(k("skipped_frames_per_s"))}/s</td>
@@ -66,7 +67,9 @@
             <td>{fmt(k("pipeline_ms_p50"))} / {fmt(k("pipeline_ms_p95"))} ms</td>
             <td>{fmt(k("visca_rtt_ms_p50"), 2)} / {fmt(k("visca_rtt_ms_max"), 2)} ms</td>
             <td>{fmt(k("visca_errors_per_s") ?? 0)}/s</td>
-            <td>{fmt(k("freed_packets_per_s"), 0)}/s, {fmt(c.freed_age * 1000, 0)} ms old</td>
+            <td>{(k("freed_packets_per_s") ?? 0) > 0 || !(k("position_polls_per_s") ?? 0)
+              ? `FreeD ${fmt(k("freed_packets_per_s"), 0)}/s, ${fmt(c.freed_age * 1000, 0)} ms old`
+              : `VISCA ${fmt(k("position_polls_per_s"), 0)}/s`}</td>
             <td>{c.counts.targets_lost}</td>
             <td>{c.counts.refinds}</td>
             <td>{c.counts.watchdog_stops}</td>

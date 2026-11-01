@@ -1,9 +1,12 @@
-"""VISCA over IP (Sony-style VISCA in an 8-byte header, UDP port 52381).
+"""VISCA over IP, three ways (`open_client`):
+- "sony": Sony-style VISCA in an 8-byte header, UDP port 52381 (BirdDog P400)
+- "udp": plain VISCA in UDP packets (PTZOptics: port 1259)
+- "tcp": plain VISCA over a TCP connection (PTZOptics: port 5678)
 
 Message builders return raw VISCA bytes (0x81 ... 0xFF). `frame()` adds the
 VISCA-over-IP header; `ViscaClient` sends messages and waits for the replies.
-Command bytes follow the Sony VISCA standard used by BirdDog's published lists;
-P400-specific behaviour (speed ranges, position units) is measured in the lab.
+Command bytes follow the Sony VISCA standard used by BirdDog's and PTZOptics' published
+lists; each camera's speed ranges and position units are measured in the lab.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ import struct
 from dataclasses import dataclass
 
 VISCA_PORT = 52381
+PLAIN_UDP_PORT = 1259  # PTZOptics' plain VISCA over UDP
+TCP_PORT = 5678  # PTZOptics' VISCA over TCP
 
 # VISCA-over-IP payload types
 PT_COMMAND = 0x0100
@@ -302,14 +307,21 @@ class ViscaClient:
         except TimeoutError:
             return False
 
+    # Which reply belongs to which request: an earlier command's completion (y0 5Z FF, socket Z = 1 or 2) can
+    # arrive after the next request was sent. Plain VISCA has no sequence numbers, so replies are told apart
+    # the way VISCA defines them: a command is answered by an ACK on its socket (then a completion on that
+    # socket), an inquiry by data on socket 0 (y0 50 ... FF). Anything else is a late reply and skipped.
+
     async def command(self, msg: bytes, wait_completion: bool = False) -> Reply:
         """Send a command and wait for its ACK (and completion if asked)."""
         async with self._lock:
             self._drain()
             self._send(PT_COMMAND, msg)
-            reply = await self._next_reply()
+            reply = await self._next_reply(lambda r: r.kind is not ReplyKind.COMPLETION)
             if reply.kind is ReplyKind.ACK and wait_completion:
-                reply = await self._next_reply(timeout=max(self.timeout, 30.0))
+                socket = reply.socket
+                reply = await self._next_reply(lambda r: r.socket == socket and r.kind is not ReplyKind.ACK,
+                                               timeout=max(self.timeout, 30.0))
             if reply.kind is ReplyKind.ERROR:
                 raise ViscaError(f"{msg.hex(' ')}: {reply.error_text}")
             return reply
@@ -318,7 +330,7 @@ class ViscaClient:
         async with self._lock:
             self._drain()
             self._send(PT_INQUIRY, msg)
-            reply = await self._next_reply()
+            reply = await self._next_reply(lambda r: r.socket == 0 and r.kind is not ReplyKind.ACK)
             if reply.kind is ReplyKind.ERROR:
                 raise ViscaError(f"{msg.hex(' ')}: {reply.error_text}")
             return reply.data
@@ -343,11 +355,17 @@ class ViscaClient:
         else:
             self._transport.sendto(msg, self._remote)
 
-    async def _next_reply(self, timeout: float | None = None) -> Reply:
-        try:
-            return await asyncio.wait_for(self._replies.get(), timeout or self.timeout)
-        except TimeoutError:
-            raise ViscaError(f"no reply from {self.host}:{self.port}") from None
+    async def _next_reply(self, accept=lambda reply: True, timeout: float | None = None) -> Reply:
+        """The next reply `accept` takes; others (late replies to earlier requests) are skipped."""
+        deadline = asyncio.get_running_loop().time() + (timeout or self.timeout)
+        while True:
+            left = deadline - asyncio.get_running_loop().time()
+            try:
+                reply = await asyncio.wait_for(self._replies.get(), max(0.0, left))
+            except TimeoutError:
+                raise ViscaError(f"no reply from {self.host}:{self.port}") from None
+            if accept(reply):
+                return reply
 
     def _drain(self) -> None:
         while not self._replies.empty():
@@ -371,3 +389,55 @@ class ViscaClient:
 
     def _on_error(self, exc: Exception) -> None:
         self.last_error = exc
+
+
+class ViscaTcpClient(ViscaClient):
+    """Plain VISCA over one TCP connection (PTZOptics: port 5678); replies come back on it.
+    Such a camera may accept only one control connection at a time, so another controller (vMix,
+    a joystick) on TCP can lock TrackXen out; plain UDP avoids that."""
+
+    def __init__(self, host: str, port: int = TCP_PORT, timeout: float = 1.0):
+        super().__init__(host, port, timeout, use_header=False)
+        self._writer: asyncio.StreamWriter | None = None
+        self._reader_task: asyncio.Task | None = None
+
+    async def connect(self) -> None:
+        from trackxen.devices.udp import resolve
+
+        reader, self._writer = await asyncio.wait_for(asyncio.open_connection(resolve(self.host), self.port),
+                                                      max(self.timeout, 1.0) * 3)
+        self._reader_task = asyncio.create_task(self._read(reader))
+
+    async def _read(self, reader: asyncio.StreamReader) -> None:
+        buffer = b""
+        try:
+            while chunk := await reader.read(1024):
+                buffer += chunk
+                end = buffer.rfind(b"\xff") + 1  # replies can arrive split or several at once
+                if end:
+                    self._on_packet(buffer[:end])
+                    buffer = buffer[end:]
+        except OSError as e:
+            self.last_error = e
+        self._writer = None  # closed by the camera: commands now fail, and the camera link reconnects
+
+    def close(self) -> None:
+        if self._reader_task:
+            self._reader_task.cancel()
+        if self._writer:
+            self._writer.close()
+            self._writer = None
+
+    def _send(self, payload_type: int, msg: bytes) -> None:
+        if not self._writer:
+            raise ViscaError(f"not connected to {self.host}:{self.port}")
+        self._writer.write(msg)
+
+
+def open_client(host: str, port: int, transport: str = "sony", timeout: float = 1.0) -> ViscaClient:
+    """A VISCA client for `transport` "sony" (header, UDP), "udp" (plain) or "tcp" (plain)."""
+    if transport == "tcp":
+        return ViscaTcpClient(host, port, timeout)
+    if transport not in ("sony", "udp"):
+        raise ValueError(f"unknown VISCA transport: {transport}")
+    return ViscaClient(host, port, timeout, use_header=transport == "sony")

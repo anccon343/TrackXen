@@ -2,6 +2,10 @@
 
 Its numbers (speed table, position units) are made up; the real P400's are measured
 in the camera lab. Position units here: 16 per degree for pan/tilt, 0-16384 for zoom.
+
+`ptzoptics()` makes one that behaves like a PTZOptics G2 instead: plain VISCA without the IP
+header, no FreeD, the data sheet's speed curve and per-axis position units, and an error for
+tilt speeds above 0x14 (that camera's maximum), so a controller that sends one is caught.
 """
 
 from __future__ import annotations
@@ -29,6 +33,16 @@ def speed_to_dps(speed: int) -> float:
     return SPEED_TABLE[max(1, min(len(SPEED_TABLE), speed)) - 1]
 
 
+def ptzoptics_settings() -> dict:
+    """FakeCamera arguments for a PTZOptics G2-like camera, from TrackXen's own defaults for that
+    type (core/camera_models.py), so the simulator and TrackXen agree on units and speeds."""
+    from trackxen.core.camera_models import MODELS
+
+    m = MODELS["ptzoptics_g2"]
+    return {"plain": True, "pan_units": m["units_per_degree"], "tilt_units": m["tilt_units_per_degree"],
+            "pan_table": m["pan_speeds"], "tilt_table": m["tilt_speeds"]}
+
+
 @dataclass
 class CameraState:
     pan: float = 0.0  # degrees
@@ -48,10 +62,15 @@ class FakeCamera(asyncio.DatagramProtocol):
     """`command_delay` makes commands take effect late, like a real camera's mechanics."""
 
     def __init__(self, freed_target: tuple[str, int] | None = None, camera_id: int = 1,
-                 freed_rate: float = 50.0, command_delay: float = 0.0):
+                 freed_rate: float = 50.0, command_delay: float = 0.0, plain: bool = False,
+                 pan_units: float = UNITS_PER_DEGREE, tilt_units: float = UNITS_PER_DEGREE,
+                 pan_table: list[float] | None = None, tilt_table: list[float] | None = None):
         self.state = CameraState()
         self.freed_target, self.camera_id, self.freed_rate = freed_target, camera_id, freed_rate
         self.command_delay = command_delay
+        self.plain = plain  # VISCA without the 8-byte IP header (PTZOptics on UDP 1259)
+        self.pan_units, self.tilt_units = pan_units, tilt_units
+        self.pan_table, self.tilt_table = pan_table or SPEED_TABLE, tilt_table or SPEED_TABLE
         self.transport: asyncio.DatagramTransport | None = None
         self.received: list[bytes] = []
         self.history: deque[tuple[float, float, float, float]] = deque(maxlen=4000)  # t, pan, tilt, zoom
@@ -95,28 +114,37 @@ class FakeCamera(asyncio.DatagramProtocol):
     # --- VISCA ------------------------------------------------------------
 
     def datagram_received(self, data: bytes, addr) -> None:
-        try:
-            payload_type, seq, payload = visca.unframe(data)
-        except ValueError:
-            return
-        if payload_type == visca.PT_CONTROL:
-            self._reply(addr, visca.PT_CONTROL_REPLY, b"\x01", seq)
-            return
+        if self.plain:
+            payload, seq = data, 0
+        else:
+            try:
+                payload_type, seq, payload = visca.unframe(data)
+            except ValueError:
+                return
+            if payload_type == visca.PT_CONTROL:
+                self._reply(addr, visca.PT_CONTROL_REPLY, b"\x01", seq)
+                return
         for msg in visca.split_messages(payload):
             self.received.append(msg)
             self._handle(msg, addr, seq)
 
     def _reply(self, addr, payload_type: int, payload: bytes, seq: int) -> None:
         if self.transport:
-            self.transport.sendto(visca.frame(payload_type, payload, seq), addr)
+            self.transport.sendto(payload if self.plain else visca.frame(payload_type, payload, seq), addr)
+
+    def _speed(self, step: int, table: list[float]) -> float:
+        return table[max(1, min(len(table), step)) - 1]
 
     def _handle(self, msg: bytes, addr, seq: int) -> None:
         s = self.state
         ack = b"\x90\x41\xff"
+        if msg[1:4] in (b"\x01\x06\x01", b"\x01\x06\x02") and (msg[4] > len(self.pan_table) or msg[5] > len(self.tilt_table)):
+            self._reply(addr, visca.PT_REPLY, b"\x90\x60\x02\xff", seq)  # speed beyond this camera's range
+            return
         if msg[1] == 0x09:  # inquiry
             if msg[2:4] == b"\x06\x12":
-                data = (visca.to_nibbles(round(s.pan * UNITS_PER_DEGREE))
-                        + visca.to_nibbles(round(s.tilt * UNITS_PER_DEGREE)))
+                data = (visca.to_nibbles(round(s.pan * self.pan_units))
+                        + visca.to_nibbles(round(s.tilt * self.tilt_units)))
             elif msg[2:4] == b"\x04\x47":
                 data = visca.to_nibbles(round(s.zoom))
             elif msg[2:4] == b"\x04\x00":
@@ -140,14 +168,14 @@ class FakeCamera(asyncio.DatagramProtocol):
         if cmd == b"\x01\x06\x01":  # pan/tilt drive
             pan_speed, tilt_speed, pan_dir, tilt_dir = msg[4], msg[5], msg[6], msg[7]
             s.target = None
-            s.pan_rate = {1: -1, 2: 1}.get(pan_dir, 0) * speed_to_dps(pan_speed)
-            s.tilt_rate = {1: 1, 2: -1}.get(tilt_dir, 0) * speed_to_dps(tilt_speed)
+            s.pan_rate = {1: -1, 2: 1}.get(pan_dir, 0) * self._speed(pan_speed, self.pan_table)
+            s.tilt_rate = {1: 1, 2: -1}.get(tilt_dir, 0) * self._speed(tilt_speed, self.tilt_table)
             self._reply(addr, visca.PT_REPLY, done, seq)
         elif cmd == b"\x01\x06\x02":  # absolute position
             pan, tilt = visca.decode_pan_tilt(msg[6:14])
-            s.target = (pan / UNITS_PER_DEGREE, tilt / UNITS_PER_DEGREE)
+            s.target = (pan / self.pan_units, tilt / self.tilt_units)
             s.pan_rate = s.tilt_rate = 0.0  # an absolute move replaces a running drive
-            s.target_speed = (speed_to_dps(msg[4]), speed_to_dps(msg[5]))
+            s.target_speed = (self._speed(msg[4], self.pan_table), self._speed(msg[5], self.tilt_table))
             s.pending.append((addr, seq))
         elif cmd == b"\x01\x04\x07":  # zoom
             p = msg[4]
@@ -162,12 +190,13 @@ class FakeCamera(asyncio.DatagramProtocol):
                 s.presets[msg[5]] = (s.pan, s.tilt, s.zoom)
             elif msg[4] == 0x02 and msg[5] in s.presets:
                 pan, tilt, zoom = s.presets[msg[5]]
-                s.target, s.target_speed = (pan, tilt), (speed_to_dps(PRESET_SPEED),) * 2
+                s.target = (pan, tilt)
+                s.target_speed = (self._speed(PRESET_SPEED, self.pan_table), self._speed(PRESET_SPEED, self.tilt_table))
                 s.pan_rate = s.tilt_rate = 0.0
                 s.zoom_rate, s.zoom_target = 0.0, zoom
             self._reply(addr, visca.PT_REPLY, done, seq)
         elif cmd == b"\x01\x06\x04":  # home
-            s.target, s.target_speed = (0.0, 0.0), (speed_to_dps(20), speed_to_dps(20))
+            s.target, s.target_speed = (0.0, 0.0), (self._speed(20, self.pan_table), self._speed(20, self.tilt_table))
             s.pan_rate = s.tilt_rate = 0.0
             s.pending.append((addr, seq))
         else:

@@ -13,7 +13,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\sim_load.py          (optional, with --sim-cameras 4: all cameras at once, measured)
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
-.venv\Scripts\python -m pytest                  (148 tests)
+.venv\Scripts\python -m pytest                  (158 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -439,6 +439,65 @@ The libraries take 2.2 GB on disk.
 and pywin32 had been missing from every requirements file. `requirements-dev.txt` installs the
 project with its tools. The simulator and the tests use the shipped sample photo, so PyTorch and
 Ultralytics are only needed to export models again.
+
+## 2026-11-01: PTZOptics G2 cameras (PT20X-SDI-GY-G2)
+
+The research is in research.md 1.9.
+
+**Built**
+- **Camera types** (`core/camera_models.py`): BirdDog P400, PTZOptics G2, other VISCA camera. A type
+  fills in its VISCA connection, FreeD, units per degree (pan and tilt separately), speed tables,
+  lens and video delay. PTZOptics values come from the data sheet and are marked as estimates until
+  measured.
+- **VISCA** (`devices/visca.py`): "sony" (header, UDP 52381), "udp" (plain, PTZOptics 1259; the default,
+  works next to vMix), "tcp" (plain, 5678, with reconnect).
+  - Speeds are kept within each camera's range (PTZOptics tilt ≤ 20).
+  - Cameras without FreeD are polled 20 times a second.
+- **Network video** (`vision/sources.py` `StreamSource`, PyAV 19.0.2):
+  - RTSP over TCP or UDP, FFmpeg low-delay options, slice threads only, the newest frame kept,
+    reconnects
+  - measured: decode time, damaged frames, gaps
+  - the default address `rtsp://IP:554/1`
+- **UI:**
+  - **Settings → Cameras:** camera type, "Video from: the camera's network stream", the stream
+    address with Main/Sub stream, VISCA connection, and **Test camera** (VISCA position and round
+    trip; stream size, codec, fps, decode time).
+  - **Welcome page:** "Cameras without NDI": add by IP address.
+  - **Statistics:** stream decode time; position source FreeD or VISCA polls/s.
+- **Lab tools:**
+  - `visca_probe.py`: `--transport udp|tcp`; `calibrate` (units per degree from the end stops);
+    `zoom-range`; speed sweep in degrees without FreeD.
+  - `stream_probe.py`: stream measurements and the **video delay** (pans the camera, compares the
+    polled position with the picture).
+- **Simulator:** `sim_camera.py --ptzoptics` behaves like a PTZOptics: plain VISCA, no FreeD, the data
+  sheet speeds, and an error for tilt speeds above 20. `python -m trackxen --sim --sim-cameras 4
+  --sim-ptzoptics 2` sets cameras 3 and 4 up that way.
+
+**Tested**
+- **Unit tests:** 10 in `test_ptzoptics.py`: types, plain UDP/TCP, late completions, polling and speed
+  limits, the stream source with an H.264 video made by PyAV, a stream that isn't there.
+- **All 10 simulator scenarios pass with the camera in PTZOptics mode.** That includes "manual":
+  another controller moving the camera is noticed from the polled positions, without FreeD.
+- **Mixed 4-camera run (2 P400 + 2 PTZOptics), first try:** 73 mixed-up VISCA replies in 2 minutes →
+  the bug above, fixed and covered by a test. Second try: no VISCA errors; position polled 21 times a
+  second per PTZOptics camera.
+  - Its speed figures (19.5 detections/s, frame → result 108 ms) are **not comparable**: a game was
+    using ~70 % of the GPU at the time. The simulator was stopped to leave it the GPU.
+- **Lab tools against a pretend PTZOptics:**
+  - `calibrate` found the ends at ±2448 = 14.4 units/degree
+  - `zoom-range` 0..16384
+  - the tilt sweep reproduced the speed table (steps 18-20: 47, 57, 70 °/s)
+  - `stream_probe` measured a test H.264 stream
+- **Also found and fixed:**
+  - `calibrate` drove the tilt at speed 23, which a PTZOptics refuses
+  - `--yes` only worked before the command name
+  - the scenario tool always used the P400's VISCA format
+
+**Waiting for the real camera** (with someone there, it moves):
+- whether VISCA on UDP 1259 answers like the documentation says
+- `calibrate`, `zoom-range`, the speed sweeps
+- `stream_probe --delay` (the RTSP delay)
+- main or sub stream
 
 ## Audits
 

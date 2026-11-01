@@ -9,6 +9,7 @@ Messages to the core (dicts on the results queue):
   tracks  {camera, frame, t_frame, t_done, width, height, tracks, skipped, timing, engine}
   preview {camera, jpeg, t_frame, width, height}
   stats   {camera, connected, frames_received, ndi_total, ndi_dropped, gaps_ms, source}
+          (+ decode_ms, codec, size for a network stream)
   engine  {engine, message}  (e.g. TensorRT finished building and took over)
   error   {message, camera?}
   face_guide    {camera, ok, problem, box}   (registration frame, about 5 times a second)
@@ -35,7 +36,7 @@ import cv2
 
 from trackxen.vision import faces
 from trackxen.vision.pipeline import GpuStage, Job
-from trackxen.vision.sources import SourceConfig, open_source
+from trackxen.vision.sources import SourceConfig, StreamSource, open_source
 from trackxen.vision.tracker import PersonTracker
 
 
@@ -133,6 +134,7 @@ class VisionLoop:
         self._tokens: dict[str, float] = {}
         self._passed: dict[str, int] = {}  # frame left out by the rate limit (don't analyse it later)
         self._allowance: set[str] = set()  # cameras the rate limit let through, frame not taken yet
+        self._stream_errors: dict[str, str] = {}  # last error reported per network stream
         self.faces: faces.FaceWorker | None = None  # started when faces are registered or being registered
         # preview JPEGs are made on their own threads: with 4 cameras that's ~48 a second, too much
         # work for the detection loop (OpenCV releases the GIL, so this runs in parallel)
@@ -334,10 +336,16 @@ class VisionLoop:
             # frame rate = frames counted / time they took (a median gap would be skewed by jitter)
             span = arrivals[-1] - arrivals[0] if len(arrivals) >= 2 else 0.0
             fps = (len(arrivals) - 1) / span if span > 0 and time.perf_counter() - arrivals[-1] < 1.0 else 0.0
-            self.emit({"type": "stats", "camera": cam, "connected": bool(src.connected),
-                       "frames_received": src.frames_received, "ndi_total": src.ndi_frames_total,
-                       "ndi_dropped": src.ndi_frames_dropped, "gaps_ms": gaps, "fps": round(fps, 2),
-                       "source": src.source_name})
+            msg = {"type": "stats", "camera": cam, "connected": bool(src.connected),
+                   "frames_received": src.frames_received, "ndi_total": src.ndi_frames_total,
+                   "ndi_dropped": src.ndi_frames_dropped, "gaps_ms": gaps, "fps": round(fps, 2),
+                   "source": src.source_name}
+            if isinstance(src, StreamSource):  # a network stream: its decoding is measured too
+                msg.update(decode_ms=src.decode_ms, codec=src.codec, size=list(src.size))
+                if src.last_error and src.last_error != self._stream_errors.get(cam):
+                    self.emit({"type": "error", "camera": cam, "message": src.last_error})
+                self._stream_errors[cam] = src.last_error
+            self.emit(msg)
 
     def close(self) -> None:
         if self.gpu:

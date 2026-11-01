@@ -162,14 +162,15 @@ def default_scene(model_path: Path, ppd: float = 40.0) -> Scene:
 
 
 class VirtualCamera:
-    """Runs a FakeCamera (VISCA + FreeD) and sends its view of `scene` as an NDI source."""
+    """Runs a FakeCamera (VISCA + FreeD) and sends its view of `scene` as an NDI source.
+    `camera_args` change the FakeCamera, e.g. fake_camera.ptzoptics_settings() for a PTZOptics G2."""
 
     def __init__(self, scene: Scene, ndi_name: str = "TRACKXEN SIM 1", lens: Lens | None = None,
                  freed_target: tuple[str, int] | None = None, fps: float = 30.0, video_delay: float = 0.08,
-                 command_delay: float = 0.03, size: tuple[int, int] = (1920, 1080)):
+                 command_delay: float = 0.03, size: tuple[int, int] = (1920, 1080), camera_args: dict | None = None):
         self.scene, self.ndi_name, self.lens = scene, ndi_name, lens or Lens()
         self.fps, self.video_delay, self.size = fps, video_delay, size
-        self.camera = FakeCamera(freed_target=freed_target, command_delay=command_delay)
+        self.camera = FakeCamera(freed_target=freed_target, command_delay=command_delay, **(camera_args or {}))
         self.camera.state.tilt = -3.0
         self.camera.state.zoom = self.lens.zoom_for_hfov(40.0)
         self.frames_sent = 0

@@ -5,8 +5,11 @@
 - **The questions' answers, also built on 2026-11-01:** speed-ups (HYPER now fits 4 cameras), the PIN
   option, the NVIDIA libraries downloaded on first start, the setup program (built and test-installed),
   and the folder renamed to `Desktop\TrackXen`.
-- **Still open:** Phase 1's measurements on the real P400s, a service-length soak test on the real
-  cameras, and Phase 8 (optional).
+- **PTZOptics G2 cameras (PT20X-SDI-GY-G2), 2026-11-01 evening:** a second camera type, with plain
+  VISCA, the camera's own RTSP stream and no FreeD. Built and tested in the simulator; the
+  real-camera measurements wait for a lab session (progress.md).
+- **Still open:** Phase 1's measurements on the real P400s and PTZOptics, a service-length soak test
+  on the real cameras, and Phase 8 (optional).
 
 **Background:**
 - `reference.md`: what Canon's app does, and descriptions of your two UI screenshots.

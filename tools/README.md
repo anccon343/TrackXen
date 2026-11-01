@@ -29,6 +29,11 @@ stop command, also when you press Ctrl+C. Don't run movement tests while a camer
 | `visca_probe.py HOST info` | Reads power, pan/tilt, zoom and focus over VISCA | no |
 | `visca_probe.py HOST --yes move ...` | Drives pan/tilt for a moment | **yes** |
 | `visca_probe.py HOST --yes sweep ...` | Measures every speed step (with FreeD if given) | **yes** |
+| `visca_probe.py HOST --transport udp ...` | The same for PTZOptics (plain VISCA, UDP 1259; `tcp` = 5678) | - |
+| `visca_probe.py HOST calibrate --yes` | Units per degree from the pan and tilt end stops (cameras without FreeD) | **yes** |
+| `visca_probe.py HOST zoom-range --yes` | Zoom position at full wide and full tele | **yes** (zoom) |
+| `stream_probe.py rtsp://IP:554/1` | A camera's own network stream: size, codec, fps, gaps, decode time, damaged frames | no |
+| `stream_probe.py URL --delay IP --yes` | ... and its video delay (pans the camera a little) | **yes** |
 | `freed_probe.py --port 40001` | Shows FreeD rate and values | no |
 | `xair_meters.py [HOST]` | Live input levels and channel names from the MR18 | no |
 | `vmix_tally.py HOST` | vMix inputs and live Program/Preview changes | no |
@@ -77,7 +82,7 @@ Then, in a second window:
 
 | Tool | What it does |
 |---|---|
-| `sim_camera.py` | A virtual P400 (VISCA, FreeD, NDI video of a stage with a walking speaker) |
+| `sim_camera.py` | A virtual P400 (VISCA, FreeD, NDI video of a stage with a walking speaker); `--ptzoptics`: behaves like a PTZOptics G2 (plain VISCA, no FreeD; with `python -m trackxen --sim --sim-ptzoptics N`) |
 | `sim_test.py` | Locks onto the speaker in TrackXen and measures framing, visibility and timing |
 | `sim_scenarios.py [names]` | Canon's tracking rules end to end: auto select, fixed / halting areas, shooting range, manual operation, preset link, multi-person, registered faces |
 | `export_models.py` | Exports the YOLO26 pose models to ONNX (needs PyTorch; run in its own process) |
