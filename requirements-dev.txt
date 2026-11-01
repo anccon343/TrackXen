@@ -1,0 +1,27 @@
+# Development environment (Windows + NVIDIA). Exact versions: requirements-lock.txt
+#
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   .venv\Scripts\python -m pip install -r requirements-dev.txt
+#   .venv\Scripts\python -m pip install -e .
+#
+# PyTorch + Ultralytics are for exporting and fine-tuning models only; the app runs ONNX Runtime.
+
+ultralytics
+onnx
+onnxslim
+# ONNX Runtime 1.31 needs CUDA 13 + cuDNN 9 (the extras) and TensorRT 10 for its TensorRT engine
+onnxruntime-gpu[cuda,cudnn]==1.31.1
+tensorrt-cu13-libs>=10,<11
+cyndilib
+opencv-python
+numpy
+pydantic
+httpx
+python-osc
+pytest
+ruff
+# the Windows program: tray icon, and the build (packaging/build.ps1)
+pystray
+pillow
+pyinstaller

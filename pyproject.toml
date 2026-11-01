@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trackxen"
+version = "0.1.0"
+description = "Automatic speaker tracking for BirdDog P400 PTZ cameras"
+requires-python = ">=3.12"
+license = { text = "AGPL-3.0-or-later" }
+
+[tool.setuptools.packages.find]
+where = ["engine"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--basetemp=.pytest-tmp"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 130
+src = ["engine", "tools", "tests"]
+
+[tool.ruff.lint]
+# pyflakes, syntax errors, bugbear, pyupgrade (zip() without strict= is fine here: lengths match by design)
+select = ["F", "E9", "B", "UP"]
+ignore = ["B905"]

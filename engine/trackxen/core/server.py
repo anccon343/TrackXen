@@ -1,0 +1,228 @@
+"""Web API: REST for commands, a WebSocket for live status (10 Hz) and preview images.
+
+Preview messages are binary: the camera id, a newline, then the JPEG.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from pathlib import Path
+
+from urllib.parse import urlparse
+
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
+
+from trackxen.core import logview
+from trackxen.core.app import App
+from trackxen.core.config import AppConfig
+from trackxen.core.performance import PRESETS
+
+STATIC = Path(__file__).resolve().parent / "static"
+
+
+def same_origin(headers) -> bool:
+    """Browsers send Origin; it must be this server. Tools without a browser send none."""
+    origin = headers.get("origin")
+    return not origin or urlparse(origin).netloc == headers.get("host")
+
+
+def check_origin(request: Request) -> None:
+    if not same_origin(request.headers):
+        raise HTTPException(status_code=403, detail="cross-site request refused")
+
+
+def create_server(app: App) -> FastAPI:
+    api = FastAPI(title="TrackXen")
+    ui = STATIC / "app"  # the built web UI (ui/ -> npm run build)
+    if (ui / "assets").exists():
+        api.mount("/assets", StaticFiles(directory=ui / "assets"), name="assets")
+    guarded = [Depends(check_origin)]
+
+    @api.get("/")
+    async def index():
+        return FileResponse(ui / "index.html" if (ui / "index.html").exists() else STATIC / "test.html")
+
+    @api.get("/test")
+    async def test_page():
+        return FileResponse(STATIC / "test.html")
+
+    @api.get("/api/status")
+    async def status():
+        return app.status()
+
+    @api.post("/api/command", dependencies=guarded)
+    async def command(cmd: dict):
+        return await app.command(cmd)
+
+    @api.get("/api/config")
+    async def get_config():
+        return app.config.model_dump()
+
+    @api.post("/api/config", dependencies=guarded)
+    async def set_config(body: dict):
+        try:
+            cfg = AppConfig.model_validate(body)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
+        await app.apply_config(cfg)
+        return {"ok": True}
+
+    @api.get("/api/system")
+    async def system():
+        """This PC: CPU, memory, GPUs and the engines ONNX Runtime can use (for the first-run check)."""
+        from trackxen.core.hwtest import system_info
+
+        return await asyncio.to_thread(system_info)
+
+    @api.get("/api/capture-devices")
+    async def capture_devices():
+        """HDMI/SDI capture devices on this PC (opened briefly to see that they work)."""
+        from trackxen.vision.sources import capture_devices as probe
+
+        return await asyncio.to_thread(probe)
+
+    @api.get("/api/logs")
+    async def log_days():
+        return logview.days(app.log.folder)
+
+    @api.get("/api/logs/{day}/events")
+    async def log_events(day: str):
+        try:
+            return await asyncio.to_thread(logview.events, app.log.folder, day)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @api.get("/api/logs/{day}/stats")
+    async def log_stats(day: str, points: int = 2000):
+        try:
+            return await asyncio.to_thread(logview.stats, app.log.folder, day, max(10, min(points, 20000)))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+    @api.get("/api/logs/{day}/file/{kind}")
+    async def log_download(day: str, kind: str):
+        try:
+            path = logview.file_of(app.log.folder, day, kind)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(status_code=404, detail="no such log") from e
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="no such log")
+        return FileResponse(path, filename=path.name)
+
+    @api.get("/api/faces")
+    async def faces():
+        return {"faces": app.faces.store.listing(),
+                "cameras": {cam: [r.model_dump() for r in s.cfg.faces] for cam, s in app.sessions.items()}}
+
+    @api.get("/api/faces/{face_id}.jpg")
+    async def face_thumbnail(face_id: str):
+        jpeg = app.faces.store.thumbnail(face_id)
+        if jpeg is None:
+            raise HTTPException(status_code=404, detail="no such face")
+        return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @api.post("/api/faces/wipe", dependencies=guarded)
+    async def wipe_faces():
+        app.faces.wipe()
+        return {"ok": True}
+
+    @api.get("/api/slots/{camera}")
+    async def slots(camera: str):
+        if camera not in app.sessions:
+            raise HTTPException(status_code=404, detail="unknown camera")
+        return app.slots(camera)
+
+    @api.get("/api/show")
+    async def save_show():
+        """The whole setup as one file (registered faces themselves stay on this PC)."""
+        stamp = time.strftime("%Y%m%d-%H%M")
+        return Response(app.config.model_dump_json(indent=2), media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="trackxen-show-{stamp}.json"'})
+
+    @api.post("/api/show", dependencies=guarded)
+    async def load_show(body: dict):
+        try:
+            cfg = AppConfig.model_validate(body)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
+        cfg.web_host, cfg.web_port = app.config.web_host, app.config.web_port  # keep this PC's web address
+        await app.apply_config(cfg, whole=True)
+        return {"ok": True}
+
+    @api.get("/api/discover")
+    async def discover():
+        return await app.discover()
+
+    @api.get("/api/presets")
+    async def presets():
+        return {name: p.__dict__ for name, p in PRESETS.items()}
+
+    @api.post("/api/hwtest", dependencies=guarded)
+    async def start_hwtest(body: dict):
+        started = app.run_hardware_test(int(body.get("cameras", 4)), float(body.get("fps", 30)),
+                                        bool(body.get("shared_with_vmix", False)), bool(body.get("quick", False)))
+        return {"ok": started}
+
+    @api.get("/api/hwtest")
+    async def hwtest_state():
+        return app.hwtest
+
+    @api.post("/api/statistics/reset", dependencies=guarded)
+    async def reset_statistics():
+        app.reset_statistics()
+        return {"ok": True}
+
+    @api.get("/api/log", response_class=PlainTextResponse)
+    async def log_tail(lines: int = 200):
+        path = app.log.text_path
+        if not path.exists():
+            return ""
+        return "\n".join(path.read_text(encoding="utf-8").splitlines()[-lines:])
+
+    @api.websocket("/ws")
+    async def ws(socket: WebSocket):
+        if not same_origin(socket.headers):  # another web site's page must not drive the cameras
+            await socket.close(code=1008)
+            return
+        await socket.accept()
+        new_preview = asyncio.Event()
+        notify = new_preview.set
+        app.listeners.add(notify)
+        send_lock = asyncio.Lock()
+        sent: dict[str, int] = {}
+
+        async def sender():
+            next_status = 0.0
+            while True:
+                try:
+                    await asyncio.wait_for(new_preview.wait(), timeout=0.1)
+                except TimeoutError:
+                    pass
+                new_preview.clear()
+                async with send_lock:
+                    for cam, (seq, jpeg) in list(app.previews.items()):
+                        if sent.get(cam) != seq:
+                            sent[cam] = seq
+                            await socket.send_bytes(cam.encode() + b"\n" + jpeg)
+                    if time.monotonic() >= next_status:
+                        next_status = time.monotonic() + 0.1
+                        await socket.send_json({"type": "status", **app.status()})
+
+        task = asyncio.create_task(sender())
+        try:
+            while True:
+                cmd = await socket.receive_json()
+                result = await app.command(cmd)
+                async with send_lock:
+                    await socket.send_json({"type": "reply", "request": cmd.get("id"), **result})
+        except WebSocketDisconnect:
+            pass
+        finally:
+            task.cancel()
+            app.listeners.discard(notify)
+
+    return api

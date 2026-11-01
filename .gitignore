@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.pytest-tmp/
+build/
+dist/
+
+# Models, engines and runtime data (large or machine-specific)
+models/
+data/
+recordings/
+lab-results/
+*.engine
+*.onnx
+*.pt
+
+# Third-party reference material (Canon's manual and UI screenshots): keep local, never publish
+docs/canon-RA-AT001-manual.pdf
+docs/ui-reference/
+
+# UI
+ui/node_modules/
+ui/dist/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Built web UI (npm run build in ui/)
+engine/trackxen/core/static/app/
+
+# Setup program (packaging/build.ps1)
+installer-output/
