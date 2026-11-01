@@ -1,6 +1,8 @@
 """Web API: REST for commands, a WebSocket for live status (10 Hz) and preview images.
 
-Preview messages are binary: the camera id, a newline, then the JPEG.
+Preview messages are binary: the camera id, a newline, then the JPEG. With the optional PIN on
+(core/access.py), every /api route except signing in, and the WebSocket, need a signed-in
+device, the PIN in an X-TrackXen-PIN header, or a request from this PC.
 """
 
 from __future__ import annotations
@@ -12,16 +14,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from trackxen.core import logview
+from trackxen.core.access import COOKIE, HEADER, LOCAL, AccessGuard
 from trackxen.core.app import App
 from trackxen.core.config import AppConfig
 from trackxen.core.performance import PRESETS
 
 STATIC = Path(__file__).resolve().parent / "static"
+OPEN_ROUTES = {"/api/access", "/api/access/login", "/api/access/logout"}  # usable before signing in
+COOKIE_AGE = 365 * 24 * 3600
 
 
 def same_origin(headers) -> bool:
@@ -35,12 +40,79 @@ def check_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="cross-site request refused")
 
 
-def create_server(app: App) -> FastAPI:
+def _address(conn: Request | WebSocket) -> str:
+    return conn.client.host if conn.client else ""
+
+
+def _with_cookie(body: dict, token: str | None) -> JSONResponse:
+    response = JSONResponse(body)
+    if token:
+        response.set_cookie(COOKIE, token, max_age=COOKIE_AGE, httponly=True, samesite="strict", path="/")
+    return response
+
+
+def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
     api = FastAPI(title="TrackXen")
     ui = STATIC / "app"  # the built web UI (ui/ -> npm run build)
     if (ui / "assets").exists():
         api.mount("/assets", StaticFiles(directory=ui / "assets"), name="assets")
     guarded = [Depends(check_origin)]
+    guard = guard or AccessGuard(app.data / "access.json",
+                                 log=lambda level, message: app.log.event("access", message, level=level))
+
+    @api.middleware("http")
+    async def require_pin(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/") and path not in OPEN_ROUTES:
+            address, cookie, pin = _address(request), request.cookies.get(COOKIE), request.headers.get(HEADER)
+            if not guard.allowed(address, cookie) and (
+                    pin is None or not await asyncio.to_thread(guard.allowed, address, cookie, pin)):
+                return JSONResponse({"detail": "PIN required"}, status_code=401)
+        return await call_next(request)
+
+    @api.get("/api/access")
+    async def access_state(request: Request):
+        return guard.status(_address(request), request.cookies.get(COOKIE))
+
+    @api.post("/api/access/login", dependencies=guarded)
+    async def sign_in(request: Request, body: dict):
+        address = _address(request)
+        token = None if guard.wait_left(address) else await asyncio.to_thread(guard.sign_in, address, body.get("pin"))
+        if not token:
+            wait = guard.wait_left(address)
+            raise HTTPException(status_code=429 if wait else 401,
+                                detail=f"Too many wrong PINs: wait {wait:.0f} s" if wait else "Wrong PIN")
+        return _with_cookie({"ok": True}, token)
+
+    @api.post("/api/access/logout", dependencies=guarded)
+    async def sign_out(request: Request):
+        guard.sign_out(request.cookies.get(COOKIE))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE, path="/")
+        return response
+
+    @api.post("/api/access/pin", dependencies=guarded)
+    async def set_pin(request: Request, body: dict):
+        """{"pin": "1234"} switches the PIN on or changes it, {"pin": null} switches it off. From another
+        device the current PIN is needed too, so a borrowed signed-in tablet can't change it."""
+        address = _address(request)
+        if guard.enabled and address not in LOCAL and not await asyncio.to_thread(
+                guard.check_pin, address, body.get("current")):
+            raise HTTPException(status_code=403, detail="The current PIN is wrong")
+        try:
+            token = guard.set_pin(body.get("pin"), bool(body.get("ask_local", False)))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return _with_cookie({"ok": True, **guard.status(address, token)}, token)
+
+    @api.post("/api/access/ask-local", dependencies=guarded)
+    async def set_ask_local(request: Request, body: dict):
+        guard.set_ask_local(bool(body.get("on")))
+        return {"ok": True, **guard.status(_address(request), request.cookies.get(COOKIE))}
+
+    @api.post("/api/access/forget-devices", dependencies=guarded)
+    async def forget_devices(request: Request):
+        return {"ok": True, "signed_out": guard.forget_devices(keep=request.cookies.get(COOKIE))}
 
     @api.get("/")
     async def index():
@@ -189,6 +261,9 @@ def create_server(app: App) -> FastAPI:
             await socket.close(code=1008)
             return
         await socket.accept()
+        if not guard.allowed(_address(socket), socket.cookies.get(COOKIE)):
+            await socket.close(code=4401)  # the page then shows the PIN screen
+            return
         new_preview = asyncio.Event()
         notify = new_preview.set
         app.listeners.add(notify)

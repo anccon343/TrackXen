@@ -1,7 +1,7 @@
 """A virtual P400: the fake camera's VISCA + FreeD, plus live video of a stage as an NDI source.
 
 The stage is a wide canvas in room angles (pan/tilt degrees). People are photo cut-outs
-from Ultralytics' sample images, so the real detector sees real people. The picture is
+from the sample photo shipped with TrackXen, so the real detector sees real people. The picture is
 rendered with the camera's position from `video_delay` seconds ago, like a real video
 pipeline, and commands take effect after `command_delay`.
 """
@@ -9,7 +9,6 @@ pipeline, and commands take effect after `command_delay`.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import math
 import threading
 import time
@@ -52,18 +51,18 @@ class Actor:
         return self._timeline[-1][3]
 
 
-def ultralytics_image(name: str) -> np.ndarray:
-    spec = importlib.util.find_spec("ultralytics")
-    if not spec or not spec.submodule_search_locations:
-        raise FileNotFoundError("the simulator needs Ultralytics' sample images (pip install ultralytics)")
-    return cv2.imread(str(Path(list(spec.submodule_search_locations)[0]) / "assets" / name))
+def sample_photo() -> np.ndarray:
+    """The people photo shipped with TrackXen (core/assets/people.jpg: Ultralytics' bus.jpg)."""
+    from trackxen.core.hwtest import PEOPLE_PHOTO
+
+    return cv2.imread(str(PEOPLE_PHOTO))
 
 
 def person_sprites(model_path: Path, count: int = 3) -> list[np.ndarray]:
-    """Crop the tallest people out of Ultralytics' bus.jpg with our own detector."""
+    """Crop the tallest people out of the sample photo with our own detector."""
     from trackxen.vision.yolo_pose import PoseDetector
 
-    image = ultralytics_image("bus.jpg")
+    image = sample_photo()
     people = PoseDetector(model_path, engines=("cpu",), conf=0.5).detect([image])[0]
     people.sort(key=lambda p: p.box[3] - p.box[1], reverse=True)
     sprites = []

@@ -34,6 +34,7 @@ from pathlib import Path
 import cv2
 
 from trackxen.vision import faces
+from trackxen.vision.pipeline import GpuStage, Job
 from trackxen.vision.sources import SourceConfig, open_source
 from trackxen.vision.tracker import PersonTracker
 
@@ -49,7 +50,9 @@ class WorkerConfig:
     preview_width: int = 960
     jpeg_quality: int = 70
     max_detect_fps: float = 0.0  # 0 = every new frame
+    pipeline: bool = True  # GPU and CPU work at the same time (vision/pipeline.py); off: one after the other
     cache_dir: str = ""  # TensorRT engine cache (default: <model_dir>/trt-cache)
+    gpu_libs: str = ""  # NVIDIA DLLs downloaded on first start (core/gpu_libs.py); "" = the Python packages'
     previews: dict[str, bool] = field(default_factory=dict)  # camera -> preview on (default on)
     tracker: dict = field(default_factory=dict)  # PersonTracker settings (Advanced mode)
 
@@ -129,6 +132,7 @@ class VisionLoop:
         self._last_detect: dict[str, float] = {}
         self._tokens: dict[str, float] = {}
         self._passed: dict[str, int] = {}  # frame left out by the rate limit (don't analyse it later)
+        self._allowance: set[str] = set()  # cameras the rate limit let through, frame not taken yet
         self.faces: faces.FaceWorker | None = None  # started when faces are registered or being registered
         # preview JPEGs are made on their own threads: with 4 cameras that's ~48 a second, too much
         # work for the detection loop (OpenCV releases the GIL, so this runs in parallel)
@@ -139,6 +143,7 @@ class VisionLoop:
         batch = 1 if len(self.sources) <= 1 else 4
         self.detectors = Detectors(cfg, batch, emit)
         self.batch = batch
+        self.gpu = GpuStage() if cfg.pipeline else None
 
     def start_sources(self) -> None:
         """(Re)try opening sources that aren't running yet (a camera may come online later)."""
@@ -210,39 +215,83 @@ class VisionLoop:
         return True
 
     def step(self) -> bool:
-        """Process the newest frames once; returns False if there was nothing new."""
+        """Detect on the newest frames once; returns False if there was nothing to do."""
         self.start_sources()
+        worked = False
+        if self.gpu:
+            for job in self.gpu.collect():
+                self._finish(job)
+                worked = True
+            if not self.gpu.has_room():  # a batch already waits for the GPU: wait for a result, don't spin
+                for job in self.gpu.collect(wait=0.005):
+                    self._finish(job)
+                return True
         now = time.monotonic()
+        fresh = self._fresh(now)
+        if not fresh:
+            return worked
+        if self.gpu and self.gpu.pending and len(fresh) < min(self._live(now), self.batch):
+            return worked  # the GPU is busy anyway: let the other cameras' frames fill this batch
+        for i in range(0, len(fresh), self.batch):
+            chunk = fresh[i:i + self.batch]
+            detector = self.detectors.get(len(chunk))
+            batch = detector.prepare([frame.image for _, frame in chunk])
+            job = Job(detector, batch, [(cam, frame, self._take(cam, frame)) for cam, frame in chunk])
+            if self.gpu:
+                self.gpu.submit(job)
+            else:
+                t0 = time.perf_counter()
+                job.out = detector.infer(batch)
+                job.infer_ms = (time.perf_counter() - t0) * 1000
+                self._finish(job)
+        return True
+
+    def _fresh(self, now: float) -> list:
+        """(camera, frame) for every camera with a frame that wasn't taken yet."""
         fresh = []
         for cam in self._started:
             frame = self.sources[cam].latest()
             if not frame or frame.number in (self.last_number[cam], self._passed.get(cam)):
                 continue
-            if self._allowed(cam, now):
-                fresh.append((cam, frame))
-            else:
-                self._passed[cam] = frame.number  # skipped for the frame rate limit (counted in "skipped")
-        if not fresh:
-            return False
-        for i in range(0, len(fresh), self.batch):
-            chunk = fresh[i:i + self.batch]
-            detector = self.detectors.get(len(chunk))
-            people = detector.detect([f.image for _, f in chunk])
-            timing = dict(detector.last_timing)
-            for (cam, frame), found in zip(chunk, people):
-                skipped = max(0, frame.number - self.last_number[cam] - 1)
-                self.last_number[cam] = frame.number
-                tracks = self.trackers[cam].update(found, frame.received)
-                h, w = frame.image.shape[:2]
-                if self.faces:
-                    self.faces.submit(cam, frame.image, tracks, time.monotonic())
-                self.emit({"type": "tracks", "camera": cam, "frame": frame.number, "t_frame": frame.received,
-                           "t_done": time.monotonic(), "width": w, "height": h,
-                           "tracks": [self._track_dict(cam, t) for t in tracks], "skipped": skipped,
-                           "timing": {k: round(v, 3) for k, v in timing.items()}, "engine": detector.engine,
-                           "batch": len(chunk)})
-                self._maybe_preview(cam, frame)
-        return True
+            if cam not in self._allowance:  # the rate limit decides once per detection, not per look
+                if not self._allowed(cam, now):
+                    self._passed[cam] = frame.number  # skipped for the frame rate limit (counted in "skipped")
+                    continue
+                self._allowance.add(cam)
+            fresh.append((cam, frame))
+        return fresh
+
+    def _live(self, now: float) -> int:
+        """Cameras whose video is coming in (a camera without a picture mustn't hold up a batch)."""
+        return sum(1 for cam in self._started
+                   if (frame := self.sources[cam].latest()) and now - frame.received < 0.25)
+
+    def _take(self, cam: str, frame) -> int:
+        """`frame` goes to detection; returns how many frames were skipped since the last one."""
+        self._allowance.discard(cam)
+        skipped = max(0, frame.number - self.last_number[cam] - 1)
+        self.last_number[cam] = frame.number
+        return skipped
+
+    def _finish(self, job: Job) -> None:
+        """Decode a batch the GPU ran, then track, report and preview each of its frames."""
+        if job.error:
+            raise job.error  # the worker stops and the core restarts it, as with any failure here
+        t0 = time.perf_counter()
+        people = job.detector.decode(job.batch, job.out)
+        timing = {"pre_ms": round(job.batch.pre_ms, 3), "infer_ms": round(job.infer_ms, 3),
+                  "post_ms": round((time.perf_counter() - t0) * 1000, 3)}
+        for (cam, frame, skipped), found in zip(job.payload, people):
+            tracks = self.trackers[cam].update(found, frame.received)
+            h, w = frame.image.shape[:2]
+            if self.faces:
+                self.faces.submit(cam, frame.image, tracks, time.monotonic())
+            self.emit({"type": "tracks", "camera": cam, "frame": frame.number, "t_frame": frame.received,
+                       "t_done": time.monotonic(), "width": w, "height": h,
+                       "pipeline_ms": round((time.perf_counter() - frame.measured) * 1000, 2) if frame.measured else None,
+                       "tracks": [self._track_dict(cam, t) for t in tracks], "skipped": skipped,
+                       "timing": timing, "engine": job.detector.engine, "batch": len(job.payload)})
+            self._maybe_preview(cam, frame)
 
     def _track_dict(self, cam: str, track) -> dict:
         d = track.to_dict()
@@ -284,13 +333,15 @@ class VisionLoop:
             gaps = [round((b - a) * 1000) for a, b in zip(arrivals[-5:], arrivals[-4:])]
             # frame rate = frames counted / time they took (a median gap would be skewed by jitter)
             span = arrivals[-1] - arrivals[0] if len(arrivals) >= 2 else 0.0
-            fps = (len(arrivals) - 1) / span if span > 0 and time.monotonic() - arrivals[-1] < 1.0 else 0.0
+            fps = (len(arrivals) - 1) / span if span > 0 and time.perf_counter() - arrivals[-1] < 1.0 else 0.0
             self.emit({"type": "stats", "camera": cam, "connected": bool(src.connected),
                        "frames_received": src.frames_received, "ndi_total": src.ndi_frames_total,
                        "ndi_dropped": src.ndi_frames_dropped, "gaps_ms": gaps, "fps": round(fps, 2),
                        "source": src.source_name})
 
     def close(self) -> None:
+        if self.gpu:
+            self.gpu.close()
         for src in self.sources.values():
             try:
                 src.stop()
@@ -308,7 +359,12 @@ def run_worker(cfg: dict, commands: mp.Queue, results: mp.Queue) -> None:
 
     loop = None
     try:
-        loop = VisionLoop(WorkerConfig.from_dict(cfg), emit)
+        config = WorkerConfig.from_dict(cfg)
+        if config.gpu_libs:
+            from trackxen.vision.runtime import use_gpu_libraries
+
+            use_gpu_libraries(config.gpu_libs)
+        loop = VisionLoop(config, emit)
         emit({"type": "ready", "engine": loop.detectors.engine, "pid": os.getpid(), "building": loop.detectors.building})
         next_stats = 0.0
         running = True

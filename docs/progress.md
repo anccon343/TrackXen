@@ -9,10 +9,11 @@ The app is called **TrackXen** (code package `trackxen`). Open questions are in 
 .venv\Scripts\python -m trackxen --sim          (window 2: TrackXen)
 open http://127.0.0.1:8090                       (the UI; /test is the simple Phase 2 page)
 .venv\Scripts\python tools\sim_test.py          (optional: automatic 30 s tracking test)
-.venv\Scripts\python tools\sim_scenarios.py     (optional: Canon rules end to end, 8 scenarios, ~6 min)
+.venv\Scripts\python tools\sim_scenarios.py     (optional: Canon rules end to end, 10 scenarios)
+.venv\Scripts\python tools\sim_load.py          (optional, with --sim-cameras 4: all cameras at once, measured)
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
-.venv\Scripts\python -m pytest                  (109 tests)
+.venv\Scripts\python -m pytest                  (148 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -324,6 +325,120 @@ preset link "On" starts tracking with App Settings 4 at the preset.
 - **Not tested with a real capture card:** I didn't open this PC's video devices at night (that could
   switch on a webcam). One unit test checks the source choice. To try: pick the capture card in
   Settings → Cameras, Apply, and look at the picture and the Statistics page.
+
+## 2026-11-01: work from the answers to questions.md
+
+**Speed-ups (questions 5 and 10).** Measured first: a batch of 4 at 960 px took 32.4 ms. That was
+8.0 ms of image preparation on the CPU, 22.0 ms in ONNX Runtime (including copying 44 MB of float
+pictures to the GPU) and 0.3 ms decoding. Converting each NDI frame to BGR took another 6-7 ms
+(numpy's strided copy). Three changes:
+- **Image preparation in the model:** `tools/fuse_preprocess.py` puts the steps into each model, so
+  they run on the GPU: uint8 pictures in, then to float, scale, BGR → RGB and channels-first.
+  - The CPU only resizes each frame into a reused, padded input buffer (`PoseDetector.prepare`), so a
+    quarter of the data goes to the GPU.
+  - A test checks that the patched model finds the same people as the original, within 1 px.
+- **Two-stage pipeline** (`vision/pipeline.py`): the GPU runs one batch on its own thread while the
+  main loop decodes, tracks and reports the previous one and prepares the next.
+  - While the GPU is busy, a new batch is only prepared once every camera has a fresh frame, so
+    batches stay full.
+  - The frame-rate limit decides once per frame.
+  - The hardware test measures through the same pipeline.
+- **NDI frame conversion** with `cv2.cvtColor`: 1.25 ms instead of 6.2 ms, with identical pixels.
+
+Hardware test (4 cameras, TensorRT, batch of 4; images per second):
+
+| Model | Before | After | One batch: prepare + GPU + decode, after |
+|---|---|---|---|
+| n @ 640 | 310 | 971 | 0.7 + 3.9 + 0.3 ms |
+| s @ 640 | 299 | 875 | 0.8 + 4.4 + 0.3 ms |
+| m @ 640 | 265 | 648 | 0.7 + 6.1 + 0.4 ms |
+| m @ 960 (HYPER) | 123 | 326 | 1.2 + 12.2 + 0.4 ms |
+
+HYPER needs 168 images/s for 4 cameras at 30 fps with headroom. It now fits (1.9×), and the test
+recommends HYPER for 4 cameras on this PC.
+
+4 virtual cameras tracking, 2 minutes each. "Before" ran the code of commit 6e4c909 from a separate
+worktree against the same virtual cameras:
+
+| Mode | | Detections/s per camera | Frame → result p50 / p95 | Skipped/s | Target visible |
+|---|---|---|---|---|---|
+| HYPER (m @ 960) | before | 19.7 | 78 / 78 ms | 10.5 | 98-99 % |
+| | after | 30.1 | 15-16 / 16-31 ms | 0 | 99 % |
+| Auto (m @ 640) | before | 28.1-28.5 | 32-46 / 47 ms | 1.9 | 97-100 % |
+| | after | 30.1 | 15-16 / 15-16 ms | 0 | 99 % |
+
+GPU load in HYPER went from 67 % to 56 %. TrackXen's memory was 3.8-3.9 GB before and after.
+
+**Found while checking these numbers:** on Windows, Python 3.12's `time.monotonic()` only ticks every
+15.6 ms, so every frame → result time above is rounded to whole ticks (0, 15.6, 31, 47, 63, 78 ms).
+That includes last night's "31 ms". They are real readings, but coarse. Now fixed: the frame →
+result time, the frame arrival gaps and the control loop are measured with `time.perf_counter()`
+(0.0001 ms resolution). The detection, VISCA and hardware-test timings already used it.
+
+Exact frame → result after the fix, 4 virtual cameras, 2 minutes each:
+- **HYPER:** p50 9.3-17.0 ms, p95 9.8-18.3 ms.
+- **Auto (m @ 640):** p50 8.0-12.9 ms, p95 8.5-14.1 ms.
+- **Both:** 30.1 detections/s per camera, no skipped frames, target visible 99-100 %.
+
+The two cameras whose frames arrive first in each round wait about 5-8 ms longer: the GPU stage
+waits for all four cameras' frames to fill a batch. TrackXen used 2.1 GB of memory in these runs,
+with no TensorRT build in that process. The runs that built TensorRT engines in the same process
+stayed at 3.9 GB, which probably explains the higher memory of the built program after its first
+start.
+
+The built program, tested end to end (`dist\TrackXen`, own data and library folders, the 4 virtual
+cameras):
+1. It started with no NVIDIA libraries and downloaded the 22 files for this RTX 4080 SUPER: 1,534 MB
+   in 49 s, every file checked.
+2. Detection ran on the CPU meanwhile, about 4 frames/s per camera; the problem lights said so.
+3. The vision worker restarted on CUDA, and TensorRT built its engines (8.5 min the first time). The
+   builder file for this GPU generation was enough; the generic "ptx" one isn't needed.
+4. Tracking: 30.1 detections/s per camera, 97-98 % visible, no problems.
+
+The libraries take 2.2 GB on disk.
+
+**Setup program** (Inno Setup 6.7.3, installed with winget for this user):
+- `installer-output\TrackXen-Setup-0.1.0.exe`: one file of 611 MB.
+- Tested: a silent "only for me" install without administrator rights, 1,227 files (1,000 MB); the
+  firewall step is skipped as intended.
+- The installed copy found the already-downloaded libraries and ran on TensorRT 2 s after start, and
+  tracked.
+- The silent uninstall removed it.
+
+**PIN (question 1).** An option in Settings → System, off by default (`core/access.py`).
+- **Storage:** the PIN is a PBKDF2 hash in `access.json`, outside settings.json, so it is never in the
+  settings API or a show file. Device sign-ins are random tokens in HttpOnly SameSite=Strict cookies,
+  stored hashed.
+- **Who needs it:** this PC never asks (unless ticked). Companion sends the PIN in an
+  `X-TrackXen-PIN` header.
+- **Wrong tries:** after 5 wrong PINs an address waits 30 s, doubling up to 15 min; every wrong PIN is
+  logged.
+- **Tests:** 11 in `test_access.py`. Also tried against the running app from the LAN address: 401
+  without the PIN, a wrong PIN refused, the right PIN signs in, and the header works. The PIN screen
+  and the settings were checked in the browser.
+
+**NVIDIA libraries downloaded on first start (question 8)** (`core/gpu_libs.py`).
+- **Size:** the 31 NVIDIA DLLs were 4.0 GB of the 4.8 GB program; the program is now 998 MB.
+- **What a PC downloads:** only the DLLs it needs, straight out of NVIDIA's wheels, with one HTTP range
+  request per file. CUDA and cuDNN come from files.pythonhosted.org, TensorRT from pypi.nvidia.com.
+  - Every PC: 1.37 GB.
+  - One TensorRT builder file for the PC's GPU generation: 161 MB for an RTX 40, 94-425 MB for others.
+- **Checks:** each file against its SHA-256 from the build. Finished files survive an interruption;
+  a failure is retried after 2, 5 and 15 s, and the whole download every minute.
+- **Until it finishes:** detection runs on the CPU. Then the vision worker restarts on the GPU.
+- **The list:** `tools/gpu_libs_manifest.py` writes `core/assets/gpu-libs.json`, and the build checks
+  it against the installed packages.
+  - Found while writing it: the installed TensorRT package's RECORD lists sizes and hashes from before
+    NVIDIA signed the DLLs (10 KB smaller). The real files are byte-identical to NVIDIA's (same size
+    and CRC), so the hashes come from the files themselves.
+- **Found in the build:** PyInstaller had pulled PyTorch's own cuDNN into the program while looking for
+  the libraries left out. Excluded; the build now fails if any NVIDIA DLL gets in.
+- **Tests:** 7 in `test_gpu_libs.py`, with a local range-request server.
+
+**Dependencies.** `pyproject.toml` lists the runtime packages; FastAPI, Starlette, Uvicorn, websockets
+and pywin32 had been missing from every requirements file. `requirements-dev.txt` installs the
+project with its tools. The simulator and the tests use the shipped sample photo, so PyTorch and
+Ultralytics are only needed to export models again.
 
 ## Audits
 

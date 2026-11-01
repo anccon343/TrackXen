@@ -1,10 +1,13 @@
 ; Inno Setup script for the TrackXen installer (Inno Setup 6: https://jrsoftware.org/isinfo.php).
 ; Build: packaging\build.ps1  (or: ISCC packaging\trackxen.iss after the PyInstaller build in dist\TrackXen)
 ;
-; Installs to Program Files, adds Start-menu (and optional desktop) shortcuts, an optional
-; start-with-Windows entry, and a Windows Firewall rule so tablets and phones on the private
-; network can open the UI on port 8090. Settings, logs, registered faces and the TensorRT engines
-; built for this PC's GPU live in %APPDATA%\TrackXen and are kept on uninstall.
+; The person installing chooses "only for me" (no administrator needed: %LOCALAPPDATA%\Programs) or
+; "for all users" (Program Files; also adds a Windows Firewall rule so tablets and phones on the
+; private network can open the UI on port 8090; for "only for me" Windows asks on the first start).
+; Start-menu (and optional desktop) shortcuts, an optional start-with-Windows entry.
+; NVIDIA's libraries are not in the setup: TrackXen downloads the ones the PC needs on its first
+; start (%LOCALAPPDATA%\TrackXen\gpu-libs). Settings, logs, registered faces and the TensorRT
+; engines built for the GPU live in %APPDATA%\TrackXen; both are kept on uninstall.
 
 #define AppName "TrackXen"
 #define AppVersion "0.1.0"
@@ -26,12 +29,10 @@ LicenseFile=..\LICENSE-NOTICE.txt
 WizardStyle=modern
 Compression=lzma2/normal
 SolidCompression=yes
-; the GPU libraries make the app about 5 GB: split the data into pieces next to the setup program
-DiskSpanning=yes
-DiskSliceSize=2000000000
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog commandline
 MinVersion=10.0
 
 [Tasks]
@@ -52,12 +53,16 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""TrackXen"" dir=in action=allow program=""{app}\TrackXen.exe"" enable=yes profile=private,domain"; \
-  Flags: runhidden; StatusMsg: "Allowing tablets on the network to reach TrackXen..."
+  Flags: runhidden; StatusMsg: "Allowing tablets on the network to reach TrackXen..."; Check: IsAdminInstallMode
 Filename: "{app}\TrackXen.exe"; Description: "Start TrackXen now"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM TrackXen.exe"; Flags: runhidden; RunOnceId: "StopApp"
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""TrackXen"""; Flags: runhidden; RunOnceId: "DelFirewall"
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""TrackXen"""; Flags: runhidden; \
+  RunOnceId: "DelFirewall"; Check: IsAdminInstallMode
+
+[Messages]
+FinishedLabel=Setup has finished installing [name] on your computer.%n%nOn its first start TrackXen downloads NVIDIA's graphics libraries for this PC (about 1.5 GB, once), so it needs an internet connection then. Until the download is done it runs on the processor.
 
 [Code]
 const
@@ -84,7 +89,7 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := True;
-  if not HasNvidiaGpu() then
+  if not HasNvidiaGpu() and not WizardSilent() then
     Result := MsgBox('No NVIDIA graphics card was found. TrackXen still runs, but on the CPU it can only follow ' +
                      'people slowly (an NVIDIA RTX card is recommended). Install anyway?', mbConfirmation, MB_YESNO) = IDYES;
 end;

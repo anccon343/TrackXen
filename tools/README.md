@@ -6,7 +6,7 @@ on top of them. Results land in `lab-results/` (not in git).
 Run them from the project folder in a normal PowerShell or Windows Terminal:
 
 ```
-cd $HOME\Desktop\birddog-tracker
+cd $HOME\Desktop\TrackXen
 .venv\Scripts\python tools\discover.py
 ```
 
@@ -81,6 +81,9 @@ Then, in a second window:
 | `sim_test.py` | Locks onto the speaker in TrackXen and measures framing, visibility and timing |
 | `sim_scenarios.py [names]` | Canon's tracking rules end to end: auto select, fixed / halting areas, shooting range, manual operation, preset link, multi-person, registered faces |
 | `export_models.py` | Exports the YOLO26 pose models to ONNX (needs PyTorch; run in its own process) |
+| `fuse_preprocess.py` | Moves the image preparation into the exported models, so it runs on the GPU (run after exporting) |
+| `gpu_libs_manifest.py` | Lists the NVIDIA DLLs the installed app downloads on its first start (`--check` in the build) |
+| `sim_load.py` | Load and soak test: all cameras tracking at once, with measured results |
 | `get_face_models.py` | Downloads the face models (YuNet, SFace) for Registered Face Tracking |
 | `hardware_test.py` | Measures this PC and recommends Light / Auto / HYPER |
 | `stats_view.py` | Shows a statistics log afterwards |

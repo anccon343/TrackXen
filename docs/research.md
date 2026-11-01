@@ -403,10 +403,10 @@ it means.
 | CPU total / our app | `psutil` (system, and the sum over the app's processes) | Same idea as vMix's "Total" and "CPU vMix" |
 | Network in/out | `psutil` per-interface byte counters, divided by the measured interval | |
 | NDI dropped frames | NDI SDK receiver performance data (total and dropped frames), via cyndilib | Equivalent to vMix's *Source Dropped* |
-| Frame arrival gaps | Arrival time of every new frame, monotonic clock | Shown like vMix: last gaps in ms |
+| Frame arrival gaps | Arrival time of every new frame, `perf_counter` | Shown like vMix: last gaps in ms |
 | Detector skipped frames | Frames that arrived while the detector was still busy | Equivalent to vMix's *Renderer Dropped* |
 | Detection time | `perf_counter` around resize, inference and decoding, separately | Shown as median / 95th percentile / max per interval, not averages |
-| Pipeline delay | Frame arrival → detection result → camera command sent, each timestamped | All on one monotonic clock, which is shared across processes on Windows |
+| Pipeline delay | Frame arrival → detection result, measured in the vision worker with `perf_counter` | Not with `time.monotonic()`: on Windows (Python 3.12) it ticks only every 15.6 ms, so delays came out as 0, 16, 31 or 47 ms (found and fixed 2026-11-01). The monotonic clock is still the time base shared with the core (frame time vs camera position) |
 | VISCA round trip | Command sent → camera's ACK | Plus counts of timeouts and errors |
 | FreeD | Packets per second, age of the newest packet, checksum errors | |
 | Glass-to-glass delay | **Calibration test**, not live: move the camera, compare when FreeD reports the move with when the picture moves | Shown with the date it was measured |

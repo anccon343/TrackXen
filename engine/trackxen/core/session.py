@@ -447,7 +447,8 @@ class CameraSession:
             self.counters.add(f"{name}.detections")
             self.counters.add(f"{name}.skipped_frames", msg.get("skipped", 0))
             self.counters.observe(f"{name}.detect_ms", sum(msg["timing"].values()) / max(1, msg.get("batch", 1)))
-            self.counters.observe(f"{name}.pipeline_ms", (msg["t_done"] - msg["t_frame"]) * 1000)
+            exact = msg.get("pipeline_ms")  # measured with perf_counter: t_done - t_frame ticks every 15.6 ms on Windows
+            self.counters.observe(f"{name}.pipeline_ms", exact if exact is not None else (msg["t_done"] - msg["t_frame"]) * 1000)
             self.counters.set(f"{name}.people", len(msg["tracks"]))
         captured = msg["t_frame"] - self.cfg.video_delay
         pose = self.link.pose_at(captured)

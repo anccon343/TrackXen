@@ -102,8 +102,28 @@ def decode_raw(pred: np.ndarray, lb: Letterbox, conf: float, iou: float = 0.5) -
     return people
 
 
+@dataclass
+class Batch:
+    """Frames placed in a model's input, ready for the GPU (PoseDetector.prepare)."""
+
+    data: np.ndarray  # the model input
+    boxes: tuple[Letterbox, ...]  # where each frame went
+    count: int  # real frames (a fixed-batch model has spare rows)
+    pre_ms: float
+
+
 class PoseDetector:
-    """Runs the pose model on one or more frames at once (one batch per call)."""
+    """Runs the pose model on one or more frames at once (one batch per call).
+
+    The three stages also run apart (vision/pipeline.py): `prepare` on the CPU, `infer` on the
+    GPU (ONNX Runtime releases the GIL meanwhile) and `decode` on the CPU.
+
+    Models patched by tools/fuse_preprocess.py take the letterboxed picture as uint8 and do the
+    rest of the preparation on the GPU; the CPU then only resizes each frame into a reused input
+    buffer. Plain models get the float input made here.
+    """
+
+    RING = 3  # input buffers per batch size: one on the GPU, one waiting for it, one being filled
 
     def __init__(self, model_path: str | Path, cache_dir: Path | None = None,
                  engines: tuple[str, ...] | None = None, conf: float = 0.4):
@@ -113,30 +133,73 @@ class PoseDetector:
         self.session, self.engine = create_session(model_path, **kwargs)
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
+        self.fused = inp.type == "tensor(uint8)"  # (batch, size, size, 3) BGR, else (batch, 3, size, size) float
+        size = inp.shape[1] if self.fused else inp.shape[2]
         self.batch = inp.shape[0] if isinstance(inp.shape[0], int) else None
-        self.size = inp.shape[2] if isinstance(inp.shape[2], int) else 640
+        self.size = size if isinstance(size, int) else 640
         self.conf = conf
         self.last_timing: dict[str, float] = {}
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="letterbox")
+        self._ring: dict[int, list[np.ndarray]] = {}
+        self._turn: dict[int, int] = {}
+        self._painted: dict[tuple[int, int, int], tuple[int, int]] = {}  # (rows, buffer, row) -> frame size
+
+    def prepare(self, frames: list[np.ndarray]) -> Batch:
+        """Resize the frames into the model's input (CPU; OpenCV releases the GIL, so in parallel)."""
+        t0 = time.perf_counter()
+        n = len(frames)
+        if self.fused:
+            rows = self.batch or n
+            if n > rows:
+                raise ValueError(f"{n} frames for a model that takes {rows}")
+            turn = self._turn.get(rows, 0)
+            self._turn[rows] = (turn + 1) % self.RING
+            ring = self._ring.setdefault(rows, [])
+            if len(ring) <= turn:
+                ring.append(np.full((rows, self.size, self.size, 3), 114, np.uint8))
+            data = ring[turn]
+            place = lambda i: self._place(data, (rows, turn, i), frames[i])  # noqa: E731
+            boxes = tuple(self._pool.map(place, range(n))) if n > 1 else (place(0),)
+        else:
+            if n > 1:
+                blobs, boxes = zip(*self._pool.map(lambda f: letterbox(f, self.size), frames))
+            else:
+                blobs, boxes = zip(*(letterbox(f, self.size) for f in frames))
+            data = np.stack(blobs)
+            if self.batch and self.batch > n:  # fixed-batch model: pad with blank frames
+                data = np.concatenate([data, np.zeros((self.batch - n, *data.shape[1:]), data.dtype)])
+        return Batch(data, tuple(boxes), n, (time.perf_counter() - t0) * 1000)
+
+    def _place(self, data: np.ndarray, key: tuple[int, int, int], frame: np.ndarray) -> Letterbox:
+        """One frame into its row of a reused input buffer; the grey border is painted only when
+        the frame size changes."""
+        h, w = frame.shape[:2]
+        scale = min(self.size / h, self.size / w)
+        nh, nw = round(h * scale), round(w * scale)
+        top, left = (self.size - nh) // 2, (self.size - nw) // 2
+        row = data[key[2]]
+        if self._painted.get(key) != (h, w):
+            row[:] = 114
+            self._painted[key] = (h, w)
+        row[top:top + nh, left:left + nw] = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        return Letterbox(scale, left, top)
+
+    def infer(self, batch: Batch) -> np.ndarray:
+        """The model (GPU). The batch's buffer must not be refilled until this returns."""
+        return self.session.run(None, {self.input_name: batch.data})[0][:batch.count]
+
+    def decode(self, batch: Batch, out: np.ndarray) -> list[list[Person]]:
+        if out.shape[-1] == 57 or (out.ndim == 3 and out.shape[1] <= 300 and out.shape[2] > 6):
+            return [decode_end2end(out[i], batch.boxes[i], self.conf) for i in range(batch.count)]
+        return [decode_raw(out[i], batch.boxes[i], self.conf) for i in range(batch.count)]
 
     def detect(self, frames: list[np.ndarray]) -> list[list[Person]]:
-        """People in each frame. `last_timing` holds the measured ms of each stage."""
-        t0 = time.perf_counter()
-        if len(frames) > 1:  # OpenCV releases the GIL: prepare the frames in parallel
-            blobs, boxes = zip(*self._pool.map(lambda f: letterbox(f, self.size), frames))
-        else:
-            blobs, boxes = zip(*(letterbox(f, self.size) for f in frames))
-        batch = np.stack(blobs)
-        n = len(frames)
-        if self.batch and self.batch > n:  # fixed-batch model: pad with blank frames
-            batch = np.concatenate([batch, np.zeros((self.batch - n, *batch.shape[1:]), batch.dtype)])
+        """People in each frame, the three stages in a row. `last_timing` holds the ms of each."""
+        batch = self.prepare(frames)
         t1 = time.perf_counter()
-        out = self.session.run(None, {self.input_name: batch})[0][:n]
+        out = self.infer(batch)
         t2 = time.perf_counter()
-        if out.shape[-1] == 57 or (out.ndim == 3 and out.shape[1] <= 300 and out.shape[2] > 6):
-            people = [decode_end2end(out[i], boxes[i], self.conf) for i in range(n)]
-        else:
-            people = [decode_raw(out[i], boxes[i], self.conf) for i in range(n)]
-        t3 = time.perf_counter()
-        self.last_timing = {"pre_ms": (t1 - t0) * 1000, "infer_ms": (t2 - t1) * 1000, "post_ms": (t3 - t2) * 1000}
+        people = self.decode(batch, out)
+        self.last_timing = {"pre_ms": batch.pre_ms, "infer_ms": (t2 - t1) * 1000,
+                            "post_ms": (time.perf_counter() - t2) * 1000}
         return people

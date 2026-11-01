@@ -18,6 +18,9 @@
   let test = $state<{ running: boolean; report: { recommendation: { mode: string; auto_preset: string | null }; summary: string } | null } | null>(null);
   let poller: ReturnType<typeof setInterval> | null = null;
   let status = $derived(live.status);
+  let libs = $derived(status?.gpu_libs);
+  let libsBusy = $derived(libs?.state === "checking" || libs?.state === "downloading");
+  let libsPct = $derived(libs?.total_mb ? Math.round((100 * (libs.done_mb ?? 0)) / libs.total_mb) : 0);
 
   $effect(() => {
     getJSON<System>("/api/system").then((s) => (system = s));
@@ -88,6 +91,18 @@
         <div><span>Best engine</span><span>{engineText[system.engines[0]] ?? system.engines[0] ?? "–"}</span></div>
         <div><span>Now running on</span><span>{status?.engine ? engineText[status.engine] ?? status.engine : "starting…"}</span></div>
       </div>
+      {#if libsBusy}
+        <div class="building">
+          <div class="bar done"><span style="width: {libsPct}%"></span></div>
+          <p>Downloading NVIDIA's graphics libraries: {libs?.done_mb ?? 0} of {libs?.total_mb || "…"} MB ({libsPct} %).
+            Only on the first start; TrackXen follows people on the processor until then, slowly.</p>
+        </div>
+      {:else if libs?.state === "failed"}
+        <div class="building">
+          <p class="warn">NVIDIA's graphics libraries couldn't be downloaded: {libs.error}. TrackXen tries again every minute.</p>
+          <button onclick={() => live.request({ type: "gpu_libs_retry" })}>Download again now</button>
+        </div>
+      {/if}
       {#if status?.engine_building}
         <div class="building">
           <div class="bar"><span></span></div>
@@ -99,7 +114,8 @@
         <p class="warn">Without an NVIDIA graphics card TrackXen runs on the CPU and can only follow people slowly.</p>
       {/if}
       <div class="row">
-        <button onclick={hardwareTest} disabled={test?.running}>{test?.running ? "Testing…" : "Test this PC's speed (about a minute)"}</button>
+        <button onclick={hardwareTest} disabled={test?.running || libsBusy}>{test?.running ? "Testing…" : libsBusy
+          ? "Test this PC's speed (after the download)" : "Test this PC's speed (about a minute)"}</button>
         {#if test?.report}
           <span>Recommended: <b>{test.report.recommendation.mode.toUpperCase()}</b>{test.report.recommendation.auto_preset ? ` (${test.report.recommendation.auto_preset})` : ""}</span>
           <button class="primary" onclick={useRecommendation} disabled={test.report.recommendation.mode === "insufficient"}>Use it</button>
@@ -151,6 +167,7 @@
   .building p { font-size: 13px; margin: 6px 0 0; }
   .bar { height: 6px; background: #111; border-radius: 3px; overflow: hidden; position: relative; }
   .bar span { position: absolute; top: 0; bottom: 0; width: 30%; background: var(--accent); animation: slide 1.6s ease-in-out infinite; }
+  .bar.done span { left: 0; animation: none; transition: width 0.5s; }
   @keyframes slide { from { left: -30%; } to { left: 100%; } }
   .found { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #333; }
   .found input { min-height: 0; margin-top: 4px; accent-color: var(--accent); }

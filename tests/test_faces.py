@@ -93,9 +93,9 @@ def test_head_crop_follows_the_face_keypoints():
 def test_same_face_matches_and_another_does_not():
     import cv2
 
-    from trackxen.sim.virtual_camera import ultralytics_image
+    from trackxen.sim.virtual_camera import sample_photo
 
-    image = ultralytics_image("bus.jpg")
+    image = sample_photo()
     engine = faces.FaceEngine(MODELS)
     crops = [image[380:500, 70:190], image[390:510, 230:350]]  # two people's heads in the sample photo
     found = [engine.find(c) for c in crops]

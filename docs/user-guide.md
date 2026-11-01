@@ -10,14 +10,19 @@ front of people.
 
 ## 1. Installing and starting
 
-- Run the setup program (or, until it exists, `dist\TrackXen\TrackXen.exe`). An NVIDIA RTX card is
-  recommended; without one TrackXen runs on the processor and can only follow people slowly.
+- Run the setup program `TrackXen-Setup-0.1.0.exe`. Windows may say "Windows protected your PC"
+  (the program isn't signed): **More info** → **Run anyway**. Choose **Install for all users** (needs
+  an administrator; also lets tablets through the Windows Firewall) or **only for me** (no
+  administrator; Windows then asks about the firewall on the first start: allow private networks).
+- An NVIDIA RTX card is recommended; without one TrackXen runs on the processor and can only follow
+  people slowly.
 - TrackXen starts in the background (an orange ring in the notification area, near the clock) and
   opens its page in the browser. Right-click the ring: **Open TrackXen**, **Open the logs folder**,
   **Quit TrackXen**.
 - Tablets and phones on the same network: open `http://<this PC's address>:8090`.
-- **The first start** prepares the graphics engine for this card (2-5 minutes, shown on the welcome
-  page). TrackXen already works meanwhile, a little slower. This happens once per PC.
+- **The first start needs the internet:** TrackXen downloads NVIDIA's graphics libraries for this
+  card (about 1.5 GB, once per PC; the welcome page shows the progress). Then it prepares the
+  graphics engine for the card (2-10 minutes). TrackXen already works meanwhile, more slowly.
 
 ## 2. First start: the welcome page
 
@@ -94,7 +99,8 @@ higher in the list wins when two registered people appear.
 ## 7. Buttons on a Stream Deck (Bitfocus Companion)
 
 Use Companion's "Generic HTTP" connection: **POST** to `http://<TrackXen PC>:8090/api/command` with
-the header `Content-Type: application/json` and one of these bodies (cameras are `cam1`-`cam4`):
+the header `Content-Type: application/json` and one of these bodies (cameras are `cam1`-`cam4`).
+If the PIN is on (section 9), also add the header `X-TrackXen-PIN` with the PIN as its value.
 
 | Button | Body |
 |---|---|
@@ -115,10 +121,24 @@ the header `Content-Type: application/json` and one of these bodies (cameras are
 - **Settings → Performance:** Light (slower PCs, or vMix on the same PC), Auto, HYPER (best and most
   responsive); the hardware test recommends one.
 
-## 9. When something is off
+## 9. A PIN for phones and tablets
+
+Without a PIN, anyone on the church network can open TrackXen's page and move the cameras.
+**Settings → System → PIN for other devices**: type a PIN of 4 to 8 digits twice and press **Switch the
+PIN on**. Every other device (phone, tablet, another PC) then shows a number pad once; after the right
+PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask on this PC too**.
+
+- After 5 wrong tries a device has to wait 30 seconds, then longer each time.
+- **Change the PIN** signs every other device out. **Sign out other devices** does that without a new
+  PIN, for example after a tablet was lost.
+- Changing or switching off the PIN from another device needs the current PIN.
+
+## 10. When something is off
 
 | What you see | What to try |
 |---|---|
+| "NVIDIA libraries missing: no internet connection" | Connect the PC to the internet once; it tries again every minute (or **Download again**) |
+| A number pad asks for a PIN | Settings → System on the TrackXen PC: the PIN, or switch it off |
 | "No video" on a camera | NDI on in the camera? Same network? Settings → Cameras → Find devices |
 | The camera doesn't move | Is the camera's address right? Statistics → VISCA errors. Is Auto Tracking on? |
 | It follows the wrong person | Click the right one; add exclusion or halting areas; lower the sensitivity |
@@ -126,3 +146,4 @@ the header `Content-Type: application/json` and one of these bodies (cameras are
 | Too slow to follow | Raise the sensitivity, make the Pan/Tilt Halting Area smaller |
 | Tracking stops after someone used the joystick | Wizard page 4: "Restart Tracking After Manual Operation" |
 | Everything slow | Settings → Performance → Light, or run the hardware test |
+| Tablets can't open the page | Windows Firewall: allow TrackXen on private networks (or install for all users) |

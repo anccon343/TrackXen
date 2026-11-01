@@ -42,13 +42,10 @@ def time_runs(fn, warmup: int, runs: int) -> float:
 
 
 def test_image():
-    import importlib.util
-
     import cv2
 
-    spec = importlib.util.find_spec("ultralytics")
-    path = Path(list(spec.submodule_search_locations)[0]) / "assets" / "bus.jpg"
-    return cv2.imread(str(path))
+    # the people photo shipped with the app (not imported from trackxen: this process has PyTorch loaded)
+    return cv2.imread(str(ROOT / "engine" / "trackxen" / "core" / "assets" / "people.jpg"))
 
 
 # --- parent process: PyTorch side ---------------------------------------------------

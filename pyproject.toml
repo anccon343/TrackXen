@@ -8,6 +8,26 @@ version = "0.1.0"
 description = "Automatic speaker tracking for BirdDog P400 PTZ cameras"
 requires-python = ">=3.12"
 license = { text = "AGPL-3.0-or-later" }
+# what the app needs at run time (exact versions: requirements-lock.txt)
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "websockets",
+    "pydantic",
+    "numpy",
+    "opencv-python",
+    # ONNX Runtime 1.31 needs CUDA 13 + cuDNN 9 (the extras) and TensorRT 10 for its TensorRT engine
+    "onnxruntime-gpu[cuda,cudnn]==1.31.1",
+    "tensorrt-cu13-libs>=10,<11",
+    "cyndilib",
+    "python-osc",
+    "psutil",
+    "pywin32",
+    "nvidia-ml-py",
+    "httpx",
+    "pystray",
+    "pillow",
+]
 
 [tool.setuptools.packages.find]
 where = ["engine"]

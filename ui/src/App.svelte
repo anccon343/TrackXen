@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { access } from "./lib/access.svelte";
   import { live } from "./lib/live.svelte";
   import { ui } from "./lib/ui.svelte";
+  import PinScreen from "./components/PinScreen.svelte";
   import TopBar from "./components/TopBar.svelte";
   import CameraList from "./components/CameraList.svelte";
   import MultiView from "./components/MultiView.svelte";
@@ -19,9 +21,14 @@
   let cameras = $derived(live.status?.cameras ?? []);
   let camera = $derived(cameras.find((c) => c.id === selected) ?? cameras[0]);
 
-  live.connect();
+  access.check().then(() => {
+    if (!access.needed) live.connect();
+  });
 </script>
 
+{#if access.needed}
+  <PinScreen onsignedin={() => live.connect()} />
+{:else}
 <div class="app">
   <TopBar {view} onview={(v) => { view = v; setup = null; }} />
   <main>
@@ -44,6 +51,7 @@
   <StatusBar onstatistics={() => { view = "statistics"; setup = null; }} />
   {#if ui.message}<div class="toast" role="status">{ui.message}</div>{/if}
 </div>
+{/if}
 
 <style>
   .app { height: 100%; display: grid; grid-template-rows: auto 1fr auto; }

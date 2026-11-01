@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 from trackxen.control.camera import CameraLink, CameraLinkConfig
 from trackxen.core.config import AppConfig, DetectionSettings, data_dir, engine_cache_dir, models_dir
 from trackxen.core.faces import FaceManager
+from trackxen.core.gpu_libs import GpuLibraries
 from trackxen.core.live_inputs import LiveInputs
 from trackxen.core.performance import PRESETS, Preset
 from trackxen.core.session import CameraSession
@@ -69,6 +71,11 @@ class App:
         self.engine = ""
         self.engine_building = False  # TensorRT being built for this GPU (first start: minutes)
         self.engine_building_since = 0.0
+        # NVIDIA's libraries: the installed app downloads them on its first start (TRACKXEN_GPU_LIBS:
+        # in development too, for testing); in development they come with the Python packages
+        self.gpu_libs: GpuLibraries | None = None
+        if getattr(sys, "frozen", False) or os.environ.get("TRACKXEN_GPU_LIBS"):
+            self.gpu_libs = GpuLibraries(log=lambda level, message: self.log.event("gpu", message, level=level))
         self.listeners: set = set()  # callables notified on new previews (web sockets)
         self._tasks: list[asyncio.Task] = []
         self._reader: threading.Thread | None = None
@@ -82,6 +89,11 @@ class App:
         self._loop.set_exception_handler(self._on_loop_error)
         self.log.event("app", f"started with {len(self.config.cameras)} camera(s)")
         await self._start_cameras()
+        if self.gpu_libs and self.gpu_libs.state != "not_needed":
+            if await asyncio.to_thread(self.gpu_libs.check):  # (hashes each file once, the first time)
+                self._use_gpu_libs()
+            else:  # first start: download them; detection runs on the processor meanwhile
+                self.gpu_libs.start(on_ready=lambda: self._loop.call_soon_threadsafe(self._gpu_libs_ready))
         self._start_worker()
         self.inputs.start()
         self._tasks = [asyncio.create_task(self._control_loop()), asyncio.create_task(self._watchdog()),
@@ -146,8 +158,24 @@ class App:
         self.log.event("app", f"unexpected error: {context.get('message', '')} {error!r}", level="error")
         loop.default_exception_handler(context)
 
+    def _use_gpu_libs(self) -> None:
+        from trackxen.vision.runtime import use_gpu_libraries
+
+        use_gpu_libraries(self.gpu_libs.dir)  # here too: the hardware test runs in this process
+
+    def _gpu_libs_ready(self) -> None:
+        """The download finished: the vision worker starts again, now on the GPU."""
+        self._use_gpu_libs()
+        if self._stopping:
+            return
+        self.log.event("vision", "NVIDIA libraries downloaded: restarting the vision worker on the GPU")
+        self._stop_worker()
+        self._start_worker()
+
     async def stop(self) -> None:
         self._stopping = True
+        if self.gpu_libs:
+            self.gpu_libs.stop()
         for task in self._tasks:
             task.cancel()
         for s in self.sessions.values():
@@ -170,6 +198,7 @@ class App:
                      for c in self.config.cameras if c.video == "capture" or c.ndi],
             model_dir=str(self.models), cache_dir=str(engine_cache_dir()), model_name=model,
             engines=tuple(self.config.engines),
+            gpu_libs=str(self.gpu_libs.dir) if self.gpu_libs and self.gpu_libs.ready else "",
             preview_fps=preset.preview_fps, max_detect_fps=preset.detect_fps,
             tracker=self.config.detection.tracker_args())
         self.worker = start_worker(cfg)
@@ -250,11 +279,12 @@ class App:
     async def _control_loop(self) -> None:
         period = 1.0 / CONTROL_HZ
         while True:
-            start = time.monotonic()
+            start, t0 = time.monotonic(), time.perf_counter()  # (monotonic ticks every 15.6 ms on Windows)
             for s in self.sessions.values():
                 s.tick(start)
-            self.counters.observe("app.control_loop_ms", (time.monotonic() - start) * 1000)
-            await asyncio.sleep(max(0.0, period - (time.monotonic() - start)))
+            took = time.perf_counter() - t0
+            self.counters.observe("app.control_loop_ms", took * 1000)
+            await asyncio.sleep(max(0.0, period - took))
 
     async def _watchdog(self) -> None:
         """Safety: stop cameras when detections stop; restart a dead vision worker."""
@@ -294,6 +324,10 @@ class App:
                 except Exception as e:  # noqa: BLE001 - one unreachable camera must not block the others
                     self.log.event("camera", f"stop failed: {e}", level="error", source=s.cfg.id)
             self.log.event("operator", "STOP ALL pressed", level="warning")
+            return {"ok": True}
+        if kind == "gpu_libs_retry":  # "Download again" after a failed download of NVIDIA's libraries
+            if self.gpu_libs:
+                self.gpu_libs.retry()
             return {"ok": True}
         if kind == "connections":  # vMix and mixer addresses: only those links restart
             for key in ("vmix", "mixer"):
@@ -421,7 +455,8 @@ class App:
             "engine": self.engine, "worker_alive": bool(self.worker and self.worker[0].is_alive()),
             "cameras": cameras,
             "stats": self.collector.latest,
-            "problems": [p.__dict__ for p in self.collector.problems],
+            "problems": [p.__dict__ for p in self.collector.problems] + (self.gpu_libs.problems() if self.gpu_libs else []),
+            "gpu_libs": self.gpu_libs.status() if self.gpu_libs else {"state": "not_needed"},
             "log_file": str(self.log.text_path),
             "hwtest_running": self.hwtest["running"],
             **self.inputs.status(),
@@ -464,6 +499,11 @@ class App:
     def run_hardware_test(self, cameras: int, fps: float, shared_with_vmix: bool, quick: bool) -> bool:
         """Start the hardware test in the background (progress lines appear in self.hwtest)."""
         if self.hwtest["running"]:
+            return False
+        if self.gpu_libs and self.gpu_libs.state in ("checking", "downloading", "failed"):
+            self.hwtest = {"running": False, "report": None,
+                           "lines": ["The hardware test waits for NVIDIA's libraries: they are still being downloaded "
+                                     "(without them it would only measure the processor)."]}
             return False
         from trackxen.core import hwtest
 

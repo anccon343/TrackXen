@@ -1,21 +1,12 @@
-import importlib.util
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from trackxen.core.hwtest import PEOPLE_PHOTO
 from trackxen.vision import yolo_pose
 
 MODEL = Path(__file__).resolve().parent.parent / "models" / "yolo26n-pose-b1.onnx"
-
-
-def ultralytics_asset(name: str) -> Path | None:
-    """Path to an image shipped with Ultralytics, found without importing it (and PyTorch)."""
-    spec = importlib.util.find_spec("ultralytics")
-    if not spec or not spec.submodule_search_locations:
-        return None
-    path = Path(list(spec.submodule_search_locations)[0]) / "assets" / name
-    return path if path.exists() else None
 
 
 def test_letterbox_geometry():
@@ -50,12 +41,58 @@ def test_decode_raw_applies_nms():
     assert sorted(round(p.score, 1) for p in people) == [0.7, 0.9]
 
 
-@pytest.mark.skipif(not MODEL.exists() or not ultralytics_asset("bus.jpg"),
-                    reason="run tools/env_check.py first to export the model")
+def fused_copy(tmp_path: Path) -> Path:
+    """MODEL with the image preparation moved into it (tools/fuse_preprocess.py)."""
+    import importlib.util
+    import shutil
+
+    pytest.importorskip("onnx")
+    spec = importlib.util.spec_from_file_location("fuse_preprocess", MODEL.parents[1] / "tools" / "fuse_preprocess.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    path = tmp_path / "fused.onnx"
+    shutil.copyfile(MODEL, path)
+    assert tool.fuse(path) and not tool.fuse(path)  # the second time there's nothing to do
+    return path
+
+
+@pytest.mark.skipif(not MODEL.exists(), reason="run tools/export_models.py first to export the model")
+def test_fused_model_finds_the_same_people(tmp_path):
+    import cv2
+
+    image = cv2.imread(str(PEOPLE_PHOTO))
+    plain = yolo_pose.PoseDetector(MODEL, engines=("cpu",), conf=0.5)
+    fused = yolo_pose.PoseDetector(fused_copy(tmp_path), engines=("cpu",), conf=0.5)
+    assert fused.fused and not plain.fused and fused.size == plain.size == 640
+    a, b = (sorted(d.detect([image])[0], key=lambda p: p.box[0]) for d in (plain, fused))
+    assert len(a) == len(b) >= 3
+    for p, q in zip(a, b):
+        np.testing.assert_allclose(p.box, q.box, atol=1.0)
+        np.testing.assert_allclose(p.keypoints[:, :2], q.keypoints[:, :2], atol=1.0)
+
+
+@pytest.mark.skipif(not MODEL.exists(), reason="run tools/export_models.py first to export the model")
+def test_reused_input_buffers_repaint_the_border_for_a_new_frame_size(tmp_path):
+    detector = yolo_pose.PoseDetector(fused_copy(tmp_path), engines=("cpu",))
+    wide = np.full((1080, 1920, 3), 200, np.uint8)
+    square = np.full((480, 480, 3), 50, np.uint8)
+    batches = [detector.prepare([wide]) for _ in range(detector.RING)]  # every buffer of the ring once
+    assert len({id(b.data) for b in batches}) == detector.RING
+    assert batches[0].data[0, 0, 0, 0] == 114 and batches[0].data[0, 320, 320, 0] == 200  # border, picture
+    square_batch = detector.prepare([square])  # fills the first buffer completely
+    assert square_batch.data is batches[0].data and square_batch.data[0, 0, 0, 0] == 50
+    for _ in range(detector.RING - 1):
+        detector.prepare([square])
+    again = detector.prepare([wide])  # back in the first buffer: the border must be grey again
+    assert again.data is batches[0].data and again.data[0, 0, 0, 0] == 114
+    assert again.boxes[0] == batches[0].boxes[0]
+
+
+@pytest.mark.skipif(not MODEL.exists(), reason="run tools/export_models.py first to export the model")
 def test_pose_detector_finds_people_on_cpu():
     import cv2
 
-    image = cv2.imread(str(ultralytics_asset("bus.jpg")))
+    image = cv2.imread(str(PEOPLE_PHOTO))
     detector = yolo_pose.PoseDetector(MODEL, engines=("cpu",), conf=0.5)
     people = detector.detect([image])[0]
     assert detector.engine == "cpu"

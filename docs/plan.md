@@ -1,9 +1,12 @@
 # Build plan: BirdDog P400 speaker tracker
 
-**Status:** approved 2026-10-31 ("install python and start building"). By the morning of 2026-11-01
-Phases 0 and 2-7 are built and checked in the simulator (details and measurements in `progress.md`);
-still open: Phase 1's measurements on the real P400s, a service-length soak test on the real
-cameras, compiling the setup program (needs Inno Setup, `questions.md` 7) and Phase 8 (optional).
+**Status:** approved 2026-10-31 ("install python and start building").
+- **Built:** Phases 0 and 2-7, checked in the simulator (details and measurements in `progress.md`).
+- **The questions' answers, also built on 2026-11-01:** speed-ups (HYPER now fits 4 cameras), the PIN
+  option, the NVIDIA libraries downloaded on first start, the setup program (built and test-installed),
+  and the folder renamed to `Desktop\TrackXen`.
+- **Still open:** Phase 1's measurements on the real P400s, a service-length soak test on the real
+  cameras, and Phase 8 (optional).
 
 **Background:**
 - `reference.md`: what Canon's app does, and descriptions of your two UI screenshots.
@@ -79,7 +82,7 @@ cameras, compiling the setup program (needs Inno Setup, `questions.md` 7) and Ph
 | Mixer | OSC client for MR18/X Air (UDP 10024), same method as Companion's module |
 | UI | **Svelte 5 + TypeScript + Vite**, served by the engine (FastAPI + WebSocket). Open it in a browser; tablets use the PC's address. (React works equally well if you prefer it) |
 | Settings | JSON files checked against a schema; the same format doubles as "show files" for saving and loading a whole setup |
-| Code | Local git repository in `Desktop\birddog-tracker`; I commit only when you say so |
+| Code | Local git repository in `Desktop\TrackXen` (until 2026-11-01 `Desktop\birddog-tracker`); I commit only when you say so |
 
 ## 3. How it fits together
 
@@ -293,7 +296,7 @@ camera after the first-run wizard.
 ## 5. Project layout
 
 ```
-birddog-tracker/
+TrackXen/
   docs/            reference, research, plan, lab report
   engine/trackxen/  Python package
     core/          app, API/WebSocket server, settings, watchdog, statistics and logs

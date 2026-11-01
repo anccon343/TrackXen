@@ -12,6 +12,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 from cyndilib.finder import Finder
 from cyndilib.receiver import Receiver
@@ -39,12 +40,24 @@ def find_sources(timeout: float = 3.0) -> list[NdiSourceInfo]:
         finder.close()
 
 
+def to_bgr(bgrx: np.ndarray) -> np.ndarray:
+    """A new BGR copy of an NDI BGRX picture. OpenCV's conversion takes 1 ms on a 1080p frame;
+    numpy's copy of the first three channels took 7 ms (measured), and every frame waited for it."""
+    try:
+        return cv2.cvtColor(bgrx, cv2.COLOR_BGRA2BGR)
+    except cv2.error:  # a row layout OpenCV can't take as it is
+        return np.ascontiguousarray(bgrx[:, :, :3])
+
+
 @dataclass
 class Frame:
     image: np.ndarray  # BGR, uint8, shape (height, width, 3)
-    received: float  # time.monotonic() when it arrived
+    received: float  # time.monotonic() when it arrived (shared time base with the core)
     timestamp: float  # sender's timestamp (POSIX seconds), 0 if unknown
     number: int
+    # time.perf_counter() when it arrived, for exact durations: on Windows time.monotonic() only
+    # ticks every 15.6 ms, so frame -> result times measured with it came out as 0, 16 or 31 ms
+    measured: float = 0.0
 
 
 class NdiReceiver:
@@ -61,7 +74,7 @@ class NdiReceiver:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.frames_received = 0
-        self.arrivals: deque[float] = deque(maxlen=32)  # monotonic arrival time of recent frames
+        self.arrivals: deque[float] = deque(maxlen=32)  # perf_counter arrival time of recent frames
         # NDI SDK receive statistics (NDIlib_recv_get_performance), refreshed once a second
         self.ndi_frames_total = 0
         self.ndi_frames_dropped = 0
@@ -123,17 +136,17 @@ class NdiReceiver:
             width, height = self._video.get_resolution()
             ts = self._video.get_timestamp_posix()
             if width and height and ts != last_ts:
-                arrived = time.monotonic()
+                arrived, exact = time.monotonic(), time.perf_counter()
                 last_ts = ts
                 stride = self._video.get_line_stride() or width * 4
                 raw = np.asarray(self._video.get_array(), dtype=np.uint8)
                 if raw.size >= stride * height:
                     bgrx = raw[: stride * height].reshape(height, stride // 4, 4)[:, :width]
-                    image = np.ascontiguousarray(bgrx[:, :, :3])
+                    image = to_bgr(bgrx)
                     self.frames_received += 1
-                    self.arrivals.append(arrived)
+                    self.arrivals.append(exact)
                     with self._lock:
-                        self._latest = Frame(image, arrived, ts, self.frames_received)
+                        self._latest = Frame(image, arrived, ts, self.frames_received, exact)
             now = time.monotonic()
             if now >= next_perf:
                 next_perf = now + 1.0

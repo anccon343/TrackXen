@@ -1,8 +1,8 @@
 """Hardware test: measures this PC with the real models and engines, then recommends a mode.
 
-Everything reported is measured here: detection throughput per preset (with resizing and
-decoding included, batched like the app), and the per-frame CPU work around it (preview
-JPEG, frame copy). Run it from the UI or `python tools/hardware_test.py`.
+Everything reported is measured here: detection throughput per preset (resizing and decoding
+included, batched and pipelined like the app), and the per-frame CPU work around it (preview
+JPEG, NDI frame conversion). Run it from the UI or `python tools/hardware_test.py`.
 """
 
 from __future__ import annotations
@@ -66,6 +66,9 @@ def test_frame(width: int = 1920, height: int = 1080) -> np.ndarray:
 
 def measure_preset_model(model_path: Path, engine: str, batch: int, frame: np.ndarray, seconds: float,
                          cache_dir: Path) -> dict:
+    """One batch at a time first (how long one batch takes, and its stages), then the throughput
+    with the GPU and CPU stages overlapping like the vision worker runs them."""
+    from trackxen.vision.pipeline import throughput
     from trackxen.vision.yolo_pose import PoseDetector
 
     loaded = time.perf_counter()
@@ -74,25 +77,29 @@ def measure_preset_model(model_path: Path, engine: str, batch: int, frame: np.nd
     frames = [frame] * batch
     for _ in range(3):
         detector.detect(frames)
-    times = []
+    times, stages = [], []
     end = time.perf_counter() + seconds
     while time.perf_counter() < end or len(times) < 10:
         t0 = time.perf_counter()
         detector.detect(frames)
         times.append(time.perf_counter() - t0)
+        stages.append(detector.last_timing)
     p50 = statistics.median(times)
     return {"engine": detector.engine, "batch": batch, "runs": len(times), "load_s": round(load_s, 2),
             "batch_ms_p50": round(p50 * 1000, 2),
             "batch_ms_p95": round(sorted(times)[int(len(times) * 0.95) - 1] * 1000, 2),
-            "images_per_s": round(batch / p50, 1)}
+            "images_per_s": round(throughput(detector, frames, seconds), 1),
+            "images_per_s_one_at_a_time": round(batch / p50, 1),
+            # where the time goes: image preparation (CPU), the model (GPU), decoding (CPU)
+            **{f"{k}_p50": round(statistics.median(s[k] for s in stages), 2) for k in ("pre_ms", "infer_ms", "post_ms")}}
 
 
 def measure_cpu_work(frame: np.ndarray, runs: int = 50) -> dict:
-    """Per-frame CPU work besides detection: copying a 1080p frame and the preview JPEG."""
+    """Per-frame CPU work besides detection: converting a 1080p NDI frame and the preview JPEG."""
     bgrx = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
     t0 = time.perf_counter()
     for _ in range(runs):
-        np.ascontiguousarray(bgrx[:, :, :3])
+        cv2.cvtColor(bgrx, cv2.COLOR_BGRA2BGR)  # what devices/ndi_in.to_bgr does with every frame
     copy_ms = (time.perf_counter() - t0) / runs * 1000
     t0 = time.perf_counter()
     for _ in range(runs):

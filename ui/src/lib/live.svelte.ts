@@ -1,4 +1,5 @@
 // Live connection to the TrackXen engine: status (10 Hz) and preview pictures over one WebSocket.
+import { access } from "./access.svelte";
 
 export interface Track {
   id: number;
@@ -143,6 +144,16 @@ export interface Status {
   audio_enabled: boolean;
   engine_building: boolean; // TensorRT being prepared for this GPU (first start)
   engine_building_s: number;
+  gpu_libs: GpuLibs; // NVIDIA's libraries, downloaded on the first start of the installed app
+}
+
+export interface GpuLibs {
+  state: "not_needed" | "checking" | "downloading" | "ready" | "failed";
+  done_mb?: number;
+  total_mb?: number;
+  file?: string;
+  error?: string;
+  folder?: string;
 }
 
 export interface HistoryPoint {
@@ -165,13 +176,16 @@ class Live {
   private pending = new Map<number, (reply: Reply) => void>();
 
   connect(): void {
+    if (this.ws) return; // already connected or connecting
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.binaryType = "arraybuffer";
     ws.onopen = () => (this.connected = true);
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       this.connected = false;
-      setTimeout(() => this.connect(), 1000);
+      this.ws = null;
+      if (ev.code === 4401) access.lost(); // the PIN is needed: the PIN screen connects again
+      else setTimeout(() => this.connect(), 1000);
     };
     ws.onmessage = (ev) => this.onMessage(ev);
     this.ws = ws;
@@ -233,12 +247,14 @@ export const live = new Live();
 
 export async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
+  if (r.status === 401) access.lost();
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
   return r.json();
 }
 
 export async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (r.status === 401) access.lost();
   if (!r.ok) throw new Error(`${url}: ${r.status} ${await r.text()}`);
   return r.json();
 }

@@ -72,12 +72,12 @@ class FileSource:
                 continue
             shown += 1
             time.sleep(max(0.0, start + shown / fps - time.monotonic()))
-            arrived = time.monotonic()
+            arrived, exact = time.monotonic(), time.perf_counter()
             self.frames_received += 1
             self.ndi_frames_total += 1
-            self.arrivals.append(arrived)
+            self.arrivals.append(exact)
             with self._lock:
-                self._latest = Frame(image, arrived, 0.0, self.frames_received)
+                self._latest = Frame(image, arrived, 0.0, self.frames_received, exact)
         cap.release()
         self.connected = False
 
@@ -119,13 +119,13 @@ class CaptureSource(FileSource):
                     time.sleep(0.02)
                     continue
                 failures = 0
-                arrived = time.monotonic()
+                arrived, exact = time.monotonic(), time.perf_counter()
                 self.connected = True
                 self.frames_received += 1
                 self.ndi_frames_total += 1
-                self.arrivals.append(arrived)
+                self.arrivals.append(exact)
                 with self._lock:
-                    self._latest = Frame(image, arrived, 0.0, self.frames_received)
+                    self._latest = Frame(image, arrived, 0.0, self.frames_received, exact)
             cap.release()
             self.connected = False
             self._stop.wait(1.0)
