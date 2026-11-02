@@ -13,6 +13,7 @@ import asyncio
 import datetime as dt
 import json
 import math
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -153,6 +154,11 @@ class Counters:
         with self._lock:
             self._gauges[name] = value
 
+    def forget(self, prefix: str) -> None:
+        """Drop the gauges whose names start with `prefix` (e.g. "cam2." for a camera that was removed)."""
+        with self._lock:
+            self._gauges = {k: v for k, v in self._gauges.items() if not k.startswith(prefix)}
+
     def observe(self, name: str, value: float) -> None:
         with self._lock:
             values = self._observed.setdefault(name, [])
@@ -206,12 +212,30 @@ class StatsLog:
         self.text_every, self.app_name = text_every, app_name
         self._last_text = float("-inf")
         self._lock = threading.Lock()
+        self._pruned = ""  # the day old files were last removed
+        self.error = ""  # why the last failed write failed
+        self._failed_at = float("-inf")
         folder.mkdir(parents=True, exist_ok=True)
         self.prune()
 
+    @property
+    def failing(self) -> str:
+        """Why a write failed, if one did in the last half minute ("" = the files are being written)."""
+        return self.error if time.monotonic() - self._failed_at < 30 else ""
+
     def _write(self, name: str, line: str) -> None:
-        with self._lock, (self.folder / name).open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        """Never raises: the control loop and the watchdog log too, and a full disk, a deleted folder
+        or a file locked by another program must not stop them (a problem light shows it instead)."""
+        with self._lock:
+            try:
+                with (self.folder / name).open("a", encoding="utf-8", errors="backslashreplace") as f:
+                    f.write(line + "\n")
+            except OSError as e:
+                self.error, self._failed_at = str(e) or type(e).__name__, time.monotonic()
+                try:
+                    self.folder.mkdir(parents=True, exist_ok=True)  # deleted: the next line can go in
+                except OSError:
+                    pass
 
     def _day(self) -> str:
         return dt.datetime.now().strftime("%Y%m%d")
@@ -222,9 +246,11 @@ class StatsLog:
 
     def _text(self, level: str, source: str, message: str) -> None:
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        self._write(self.text_path.name, f"{stamp}  {level.upper():7s} {source:6s} {message}")
+        self._write(self.text_path.name, f"{stamp}  {level.upper():7s} {_one_line(source):6s} {_one_line(message)}")
 
     def sample(self, record: dict) -> None:
+        if self._day() != self._pruned:  # (the app may run for weeks)
+            self.prune()
         self._write(f"stats-{self._day()}.jsonl", json.dumps(
             {"time": dt.datetime.now().isoformat(timespec="seconds"), **record}, separators=(",", ":")))
         now = time.monotonic()
@@ -239,14 +265,30 @@ class StatsLog:
         self._text(level, str(fields.get("source", "")), f"{kind}: {message}")
 
     def prune(self) -> None:
+        """Remove the files older than `keep_days` (at the start, then once a day)."""
+        self._pruned = self._day()
         cutoff = dt.datetime.now() - dt.timedelta(days=self.keep_days)
-        for path in [*self.folder.glob("*.jsonl"), *self.folder.glob("*.log")]:
+        try:
+            paths = [*self.folder.glob("*.jsonl"), *self.folder.glob("*.log")]
+        except OSError:
+            return
+        for path in paths:
             try:
                 day = dt.datetime.strptime(path.stem.split("-")[-1], "%Y%m%d")
             except ValueError:
                 continue
             if day < cutoff:
-                path.unlink(missing_ok=True)
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:  # e.g. open in another program: next time
+                    pass
+
+
+def _one_line(text: str) -> str:
+    """Line breaks and other control characters (in a face or camera name) written as escapes, so
+    every text log line is one real entry."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", lambda m: m.group().encode("unicode_escape").decode("ascii"),
+                  text)
 
 
 @dataclass
@@ -254,6 +296,7 @@ class Problem:
     level: str  # "warning" or "error"
     source: str  # "pc", "gpu", "cam1", "mixer", "vmix", ...
     message: str
+    kind: str = ""  # what it is without its numbers ("GPU load"); "" = the message's first word
 
 
 @dataclass
@@ -274,11 +317,12 @@ def check_problems(sample: dict, limits: Limits) -> list[Problem]:
         problems.append(Problem("warning", "pc", f"CPU at {sample['cpu_percent']:.0f} %"))
     if sample.get("memory_percent", 0) >= limits.memory_warning:
         problems.append(Problem("warning", "pc", f"memory at {sample['memory_percent']:.0f} %"))
-    for gpu in sample.get("gpus", []):
+    for i, gpu in enumerate(sample.get("gpus", [])):
+        name = f"GPU {i + 1}" if i else "GPU"
         if gpu["load_percent"] >= limits.gpu_load_warning:
-            problems.append(Problem("warning", "gpu", f"GPU at {gpu['load_percent']} % load"))
+            problems.append(Problem("warning", "gpu", f"{name} at {gpu['load_percent']} % load", f"{name} load"))
         if gpu["temperature_c"] >= limits.gpu_temp_warning:
-            problems.append(Problem("warning", "gpu", f"GPU at {gpu['temperature_c']} °C"))
+            problems.append(Problem("warning", "gpu", f"{name} at {gpu['temperature_c']} °C", f"{name} temperature"))
     app = sample.get("app", {})
     for cam, expected in limits.expected_fps.items():
         # detections per second against the camera's measured frame rate
@@ -311,6 +355,7 @@ class StatsCollector:
         self._present: dict[tuple[str, str], int] = {}  # consecutive samples with the problem
         self._absent: dict[tuple[str, str], int] = {}  # consecutive samples without an active problem
         self._message: dict[tuple[str, str], Problem] = {}  # newest form of each active problem
+        self._logged: dict[tuple[str, str], str] = {}  # the level each active problem was logged at
         self._last = time.monotonic()
 
     def tick(self) -> dict:
@@ -319,7 +364,10 @@ class StatsCollector:
         # Never divide counts by less than half an interval (e.g. a tick right after start)
         sample["app"] = self.counters.take(max(now - self._last, 0.5 * self.interval))
         self._last = now
-        problems = self._settle(check_problems(sample, self.limits))
+        found = check_problems(sample, self.limits)
+        if self.log.failing:
+            found.append(Problem("warning", "pc", f"log files can't be written: {self.log.failing}", "log files"))
+        problems = self._settle(found)
         self.latest, self.problems = sample, problems
         self.log.sample(sample)
         if self.on_sample:
@@ -328,8 +376,10 @@ class StatsCollector:
 
     def _settle(self, problems: list[Problem]) -> list[Problem]:
         """The problems to show: logged when they start (after RAISE_AFTER samples in a row) and
-        when they clear (after CLEAR_AFTER samples without them), not every second."""
-        current = {(p.source, p.message.split(" ")[0]): p for p in problems}
+        when they clear (after CLEAR_AFTER samples without them), not every second. A problem is
+        known by its source and kind, so its numbers can change (and a warning can become an
+        error, logged once more) without it counting as a new one."""
+        current = {(p.source, p.kind or p.message.split(" ")[0]): p for p in problems}
         for key in list(self._present):
             if key not in current:
                 del self._present[key]
@@ -338,15 +388,18 @@ class StatsCollector:
             self._absent.pop(key, None)
             if key in self._active:
                 self._message[key] = p
+                if p.level == "error" and self._logged[key] != "error":
+                    self._logged[key] = p.level
+                    self.log.event("problem", p.message, level=p.level, source=p.source)
             elif self._present[key] >= RAISE_AFTER:
                 self._active.add(key)
-                self._message[key] = p
+                self._message[key], self._logged[key] = p, p.level
                 self.log.event("problem", p.message, level=p.level, source=p.source)
         for key in list(self._active - current.keys()):
             self._absent[key] = self._absent.get(key, 0) + 1
             if self._absent[key] >= CLEAR_AFTER:
                 self._active.discard(key)
-                del self._absent[key], self._message[key]
+                del self._absent[key], self._message[key], self._logged[key]
                 self.log.event("problem_cleared", f"{key[1]} back to normal", source=key[0])
         return [self._message[key] for key in sorted(self._active)]
 

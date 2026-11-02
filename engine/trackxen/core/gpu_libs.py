@@ -27,6 +27,8 @@ MANIFEST = Path(__file__).with_name("assets") / "gpu-libs.json"
 DEFLATED = 8  # zip compression method (0 = stored as it is)
 RETRY_AFTER = (2.0, 5.0, 15.0)  # seconds between tries of one file
 RETRY_ALL_S = 60.0  # after a failed download (no internet...)
+CHUNK = 1 << 20  # bytes taken from the network at a time
+OLDEST_GPU = 75  # CUDA 13, and the cuDNN and TensorRT made for it, run on Turing (sm75) and newer
 USER_AGENT = "TrackXen/0.1.0 (downloads NVIDIA's runtime libraries once)"
 
 
@@ -54,7 +56,9 @@ def gpu_generations() -> set[str]:
 
 def wanted(files: list[dict], generations: set[str]) -> list[dict]:
     """The files for these GPUs: all CUDA and cuDNN ones, TensorRT's builder file for each GPU
-    generation, and its generic one when TensorRT has no file of its own for a generation."""
+    generation, and its generic one when TensorRT has no file of its own for a generation.
+    GPUs older than CUDA 13 supports (GTX 10xx and before) get nothing: they couldn't use them."""
+    generations = {g for g in generations if not g[2:].isdigit() or int(g[2:]) >= OLDEST_GPU}
     if not generations:
         return []
     known = {f["gpu"] for f in files if f["gpu"]}
@@ -70,6 +74,20 @@ def sha256_of(path: Path) -> str:
         while chunk := f.read(1 << 22):
             h.update(chunk)
     return h.hexdigest()
+
+
+class Partial:
+    """How far a file's download got. Kept between tries, so a broken connection carries on where it
+    stopped instead of fetching the whole file again (one of them is 372 MB)."""
+
+    def __init__(self, f: dict):
+        self.method = f["method"]
+        self.restart()
+
+    def restart(self) -> None:
+        self.unpack = zlib.decompressobj(-15) if self.method == DEFLATED else None
+        self.sha, self.size, self.received = hashlib.sha256(), 0, 0  # (size: unpacked, in the part file)
+        self.checked = False  # complete and matching NVIDIA's file, only not moved into place yet
 
 
 class GpuLibraries:
@@ -88,6 +106,7 @@ class GpuLibraries:
         self.total = 0
         self.current = ""
         self.error = ""
+        self._partial: dict[str, Partial] = {}  # files begun and not finished, by path
         self._retry = threading.Event()
         self._stop = threading.Event()
 
@@ -141,33 +160,56 @@ class GpuLibraries:
         return httpx.Client(timeout=httpx.Timeout(30.0, read=60.0), follow_redirects=True, verify=verify,
                             headers={"User-Agent": USER_AGENT})
 
-    def fetch(self, client, f: dict) -> None:
-        """One DLL: its compressed bytes from the wheel, unpacked and checked, then moved into place."""
+    def fetch(self, client, f: dict, partial: Partial | None = None) -> None:
+        """One DLL: its compressed bytes from the wheel, unpacked and checked, then moved into place.
+        With the `partial` of an earlier try, only the bytes still missing are fetched."""
+        import httpx
+
+        p = partial or Partial(f)
         target = self.dir / f["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         part = target.with_name(target.name + ".part")
-        unpack = zlib.decompressobj(-15) if f["method"] == DEFLATED else None
-        sha, size = hashlib.sha256(), 0
-        start = f["data_offset"]
-        with client.stream("GET", f["url"], headers={"Range": f"bytes={start}-{start + f['compressed'] - 1}"}) as r:
-            if r.status_code != 206:
-                raise OSError(f"{r.url.host} sent HTTP {r.status_code} instead of a part of the file")
-            with open(part, "wb") as out:
-                for chunk in r.iter_bytes(1 << 20):
-                    self.done += len(chunk)
-                    data = unpack.decompress(chunk) if unpack else chunk
-                    sha.update(data)
-                    size += len(data)
+        if p.received and (not part.exists() or part.stat().st_size != p.size):
+            self._restart(p)  # the part file isn't what was written before: from the start
+        if not p.checked:
+            if p.received < f["compressed"]:
+                start, end = f["data_offset"] + p.received, f["data_offset"] + f["compressed"] - 1
+                with client.stream("GET", f["url"], headers={"Range": f"bytes={start}-{end}"}) as r:
+                    if r.status_code != 206:
+                        raise OSError(f"{r.url.host} sent HTTP {r.status_code} instead of a part of the file")
+                    try:
+                        with open(part, "ab" if p.received else "wb") as out:
+                            for chunk in r.iter_bytes(CHUNK):
+                                data = p.unpack.decompress(chunk) if p.unpack else chunk
+                                out.write(data)
+                                p.sha.update(data)
+                                p.size += len(data)
+                                p.received += len(chunk)
+                                self.done += len(chunk)
+                    except httpx.HTTPError:
+                        raise  # the connection broke between two pieces: the next try carries on from here
+                    except Exception:
+                        self._restart(p)  # unpacking or writing broke off halfway through a piece
+                        raise
+            try:
+                data = p.unpack.flush() if p.unpack else b""
+                with open(part, "ab") as out:
                     out.write(data)
-                if unpack:
-                    data = unpack.flush()
-                    sha.update(data)
-                    size += len(data)
-                    out.write(data)
-        if size != f["size"] or sha.hexdigest() != f["sha256"]:
-            part.unlink(missing_ok=True)
-            raise OSError(f"{Path(f['path']).name} didn't match NVIDIA's file (size or checksum)")
-        os.replace(part, target)
+            except Exception:
+                self._restart(p)
+                raise
+            p.sha.update(data)
+            p.size += len(data)
+            if p.size != f["size"] or p.sha.hexdigest() != f["sha256"]:
+                part.unlink(missing_ok=True)
+                self._restart(p)
+                raise OSError(f"{Path(f['path']).name} didn't match NVIDIA's file (size or checksum)")
+            p.checked = True
+        os.replace(part, target)  # (if this fails, e.g. a virus scanner has the file open, the next try only does this)
+
+    def _restart(self, p: Partial) -> None:
+        self.done -= p.received
+        p.restart()
 
     def download(self) -> None:
         """Fetch every missing file (each tried a few times); raises if one can't be had."""
@@ -184,20 +226,20 @@ class GpuLibraries:
             raise OSError(f"not enough disk space on {self.dir.drive or self.dir}: needs {need / 1e9:.1f} GB, "
                           f"{free / 1e9:.1f} GB free")
         self.state, self.error = "downloading", ""
-        self.total, self.done = sum(f["compressed"] for f in todo), 0
+        self.total = sum(f["compressed"] for f in todo)
+        self.done = sum(self._partial[f["path"]].received for f in todo if f["path"] in self._partial)
         self.log("info", f"downloading NVIDIA's libraries: {len(todo)} files, {self.total / 1e6:.0f} MB")
         verified, system_certificates = self._verified(), False
         client = self._client(system_certificates)
         try:
             for f in todo:
                 self.current = Path(f["path"]).name
+                partial = self._partial.setdefault(f["path"], Partial(f))
                 for attempt in range(len(RETRY_AFTER) + 1):
-                    before = self.done
                     try:
-                        self.fetch(client, f)
+                        self.fetch(client, f, partial)
                         break
                     except (httpx.HTTPError, OSError, zlib.error) as e:
-                        self.done = before
                         if "CERTIFICATE_VERIFY_FAILED" in str(e) and not system_certificates:
                             system_certificates = True  # try Windows' certificate store instead
                             client.close()
@@ -205,6 +247,7 @@ class GpuLibraries:
                         if attempt == len(RETRY_AFTER) or self._stop.is_set():
                             raise
                         self._stop.wait(RETRY_AFTER[attempt])
+                del self._partial[f["path"]]
                 self._mark_verified(verified, f)
         finally:
             client.close()

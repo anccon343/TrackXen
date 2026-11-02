@@ -20,6 +20,7 @@ import numpy as np
 import psutil
 
 from trackxen.core.performance import PRESETS, recommend
+from trackxen.core.stats import percentile
 from trackxen.vision.runtime import available_engines
 
 try:
@@ -64,17 +65,21 @@ def test_frame(width: int = 1920, height: int = 1080) -> np.ndarray:
     return frame
 
 
-def measure_preset_model(model_path: Path, engine: str, batch: int, frame: np.ndarray, seconds: float,
-                         cache_dir: Path) -> dict:
+def measure_preset_model(model_path: Path, engines: tuple[str, ...], batch: int, frame: np.ndarray, seconds: float,
+                         cache_dir: Path, cameras: int = 4) -> dict:
     """One batch at a time first (how long one batch takes, and its stages), then the throughput
-    with the GPU and CPU stages overlapping like the vision worker runs them."""
+    with the GPU and CPU stages overlapping like the vision worker runs them.
+
+    The model opens on the first of `engines` that works, as in the vision worker. A batch holds
+    one frame per camera at most (the worker doesn't wait for a camera's next frame), so with 2 or
+    3 cameras the batch-of-4 model runs with empty rows, as it does in the app."""
     from trackxen.vision.pipeline import throughput
     from trackxen.vision.yolo_pose import PoseDetector
 
     loaded = time.perf_counter()
-    detector = PoseDetector(model_path, cache_dir=cache_dir, engines=(engine,), conf=0.1)
+    detector = PoseDetector(model_path, cache_dir=cache_dir, engines=engines, conf=0.1)
     load_s = time.perf_counter() - loaded
-    frames = [frame] * batch
+    frames = [frame] * max(1, min(batch, cameras))
     for _ in range(3):
         detector.detect(frames)
     times, stages = [], []
@@ -87,9 +92,9 @@ def measure_preset_model(model_path: Path, engine: str, batch: int, frame: np.nd
     p50 = statistics.median(times)
     return {"engine": detector.engine, "batch": batch, "runs": len(times), "load_s": round(load_s, 2),
             "batch_ms_p50": round(p50 * 1000, 2),
-            "batch_ms_p95": round(sorted(times)[int(len(times) * 0.95) - 1] * 1000, 2),
+            "batch_ms_p95": round(percentile(sorted(times), 95) * 1000, 2),
             "images_per_s": round(throughput(detector, frames, seconds), 1),
-            "images_per_s_one_at_a_time": round(batch / p50, 1),
+            "images_per_s_one_at_a_time": round(len(frames) / p50, 1),
             # where the time goes: image preparation (CPU), the model (GPU), decoding (CPU)
             **{f"{k}_p50": round(statistics.median(s[k] for s in stages), 2) for k in ("pre_ms", "infer_ms", "post_ms")}}
 
@@ -117,6 +122,8 @@ def run(models_dir: Path, cameras: int = 4, source_fps: float = 30.0, shared_wit
     TensorRT (NVIDIA) is measured by default because the app runs on it; building its engines
     takes a few minutes per model the first time, and the app reuses them afterwards.
     `tensorrt=False` measures the next engine instead (quicker, but conservative numbers).
+    ONNX Runtime lists the engines it was built with, not the ones this PC can run: an engine
+    that doesn't load falls back to the next one, as in the app (without NVIDIA: the processor).
     """
     info = system_info()
     progress(f"PC: {info['cpu']} ({info['cpu_threads']} threads), {info['memory_gb']} GB RAM, "
@@ -127,7 +134,6 @@ def run(models_dir: Path, cameras: int = 4, source_fps: float = 30.0, shared_wit
         progress("quick test: TensorRT skipped, so the numbers are lower than the app will really reach")
     elif engines[0] == "tensorrt":
         progress("TensorRT: the first run builds an engine per model (a few minutes each); later runs are fast")
-    engine = engines[0]
     batch = 1 if cameras <= 1 else 4
     frame = test_frame()
     results, measured = {}, {}
@@ -138,12 +144,17 @@ def run(models_dir: Path, cameras: int = 4, source_fps: float = 30.0, shared_wit
         if not path.exists():
             progress(f"{name}: model file missing ({path.name}), skipped")
             continue
-        progress(f"measuring {name} on {engine} ...")
+        progress(f"measuring {name} on {engines[0]} ...")
         try:
-            r = measure_preset_model(path, engine, batch, frame, seconds, cache_dir or models_dir / "trt-cache")
+            r = measure_preset_model(path, tuple(engines), batch, frame, seconds, cache_dir or models_dir / "trt-cache",
+                                     cameras)
         except Exception as e:  # noqa: BLE001 - report and continue with the other models
             progress(f"{name}: failed: {str(e).splitlines()[0][:200]}")
             continue
+        if r["engine"] != engines[0]:
+            progress(f"  {engines[0]} didn't load: measured on {r['engine']}")
+            # not tried again for the next models (a failing TensorRT build can take minutes)
+            engines = engines[engines.index(r["engine"]):]
         results[name] = r
         measured[key] = r["images_per_s"]
         progress(f"  {r['images_per_s']} images/s (batch of {batch}: {r['batch_ms_p50']} ms median, "
@@ -151,6 +162,7 @@ def run(models_dir: Path, cameras: int = 4, source_fps: float = 30.0, shared_wit
     cpu = measure_cpu_work(frame)
     rec = recommend(measured, cameras, source_fps, shared_with_vmix)
     progress(rec.text())
+    engine = next((r["engine"] for r in results.values()), engines[0])  # the one really measured
     return {"time": dt.datetime.now().isoformat(timespec="seconds"), "system": info, "engine": engine,
             "cameras": cameras, "source_fps": source_fps, "shared_with_vmix": shared_with_vmix,
             "models": results, "cpu_work": cpu, "recommendation": rec.to_dict(), "summary": rec.text()}

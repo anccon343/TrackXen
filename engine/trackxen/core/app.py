@@ -156,6 +156,8 @@ class App:
             for s in self.sessions.values():
                 await s.link.close()
             self.sessions.clear()
+        for cam in self.config.cameras:  # measured again by the new worker (a camera without video now: not at all)
+            self.counters.forget(f"{cam.id}.")
         self.config = config
         self.limits.expected_fps.clear()
         if not same_cameras:

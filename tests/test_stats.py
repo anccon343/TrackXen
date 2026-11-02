@@ -144,3 +144,76 @@ def test_log_viewer_reads_days_events_and_thinned_samples(tmp_path):
 
     with pytest.raises(ValueError):
         logview.file_of(tmp_path, "../../secret", "text")
+
+
+def test_gpu_load_and_temperature_are_separate_problems(tmp_path):
+    gpu = {"load_percent": 98, "memory_used_mb": 1, "memory_total_mb": 2, "temperature_c": 60}
+    busy = {"cpu_percent": 10, "memory_percent": 20, "gpus": [gpu]}
+    hot_and_busy = {**busy, "gpus": [{**gpu, "temperature_c": 88}]}
+    seq = [busy] * 4 + [hot_and_busy] * 4
+    collector = stats.StatsCollector(stats.StatsLog(tmp_path), sampler=FakeSampler(seq))
+    for _ in seq:
+        collector.tick()
+    assert [p.message for p in collector.problems] == ["GPU at 98 % load", "GPU at 88 °C"]
+    events = read_lines(tmp_path / f"events-{dt.datetime.now():%Y%m%d}.jsonl")
+    assert [e["message"] for e in events] == ["GPU at 98 % load", "GPU at 88 °C"]  # the second one is logged too
+
+
+def test_two_gpus_have_their_own_problems():
+    gpu = {"load_percent": 99, "memory_used_mb": 1, "memory_total_mb": 2, "temperature_c": 50}
+    found = [p.message for p in stats.check_problems({"gpus": [gpu, gpu]}, stats.Limits())]
+    assert found == ["GPU at 99 % load", "GPU 2 at 99 % load"]
+
+
+def test_a_problem_getting_worse_is_logged_once(tmp_path):
+    rates = [20] * 3 + [5, 20, 5, 20, 5]  # a warning, then flapping between error and warning
+    ok = {"cpu_percent": 10, "memory_percent": 20, "gpus": []}
+    collector = stats.StatsCollector(stats.StatsLog(tmp_path), limits=stats.Limits(expected_fps={"cam1": 30}),
+                                     sampler=FakeSampler([ok] * len(rates)))
+    for rate in rates:
+        collector.counters.add("cam1.detections", rate)
+        collector._last -= 1.0  # a second per tick
+        collector.tick()
+    events = read_lines(tmp_path / f"events-{dt.datetime.now():%Y%m%d}.jsonl")
+    assert [(e["kind"], e["level"]) for e in events] == [("problem", "warning"), ("problem", "error")]
+
+
+def test_a_failed_log_write_is_reported_not_raised(tmp_path):
+    import shutil
+
+    log = stats.StatsLog(tmp_path / "logs")
+    shutil.rmtree(tmp_path / "logs")  # (or the disk full, or the file locked by another program)
+    log.event("camera", "target lost", source="cam1")  # must not stop the control loop or the watchdog
+    assert log.failing
+    log.event("camera", "target found", source="cam1")  # the folder was made again
+    assert "target found" in log.text_path.read_text(encoding="utf-8")
+    (tmp_path / "logs" / f"stats-{dt.datetime.now():%Y%m%d}.jsonl").mkdir()  # samples can't be written
+    collector = stats.StatsCollector(log, sampler=FakeSampler([{"cpu_percent": 1, "gpus": []}] * 3))
+    for _ in range(3):
+        collector.tick()
+    assert [p.source for p in collector.problems] == ["pc"] and "log" in collector.problems[0].message
+
+
+def test_old_logs_are_pruned_while_running(tmp_path, monkeypatch):
+    log = stats.StatsLog(tmp_path, keep_days=30)
+    old = tmp_path / "stats-20200101.jsonl"
+    old.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(log, "_day", lambda: "20991231")  # the next day began
+    log.sample({"cpu_percent": 1})
+    assert not old.exists()
+
+
+def test_names_with_line_breaks_stay_on_one_text_log_line(tmp_path):
+    log = stats.StatsLog(tmp_path)
+    log.event("faces", "face registered: Bob\n2026-11-02 06:00:00.000  ERROR   cam1 forged\u2028x", source="cam\r1")
+    log.event("faces", "face registered: \ud800", source="cam1")  # (a lone surrogate, which JSON allows)
+    lines = log.text_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2 and "Bob\\n2026" in lines[0] and "cam\\r1" in lines[0]
+
+
+def test_forgotten_gauges_are_no_longer_reported():
+    c = stats.Counters()
+    c.set("cam1.source_fps", 29.97)
+    c.set("cam12.source_fps", 25)
+    c.forget("cam1.")
+    assert c.take(1.0) == {"cam12.source_fps": 25}
