@@ -4,8 +4,8 @@
 - **Built:** Phases 0 and 2-7, checked in the simulator (details and measurements in `progress.md`).
 - **Planned in Phases 2-7 but not built yet:** body re-ID (Phase 4c; the identity lock uses faces
   only), the update check against GitHub Releases (Phase 7), and "Stop all cameras" in the tray menu
-  (STOP ALL is on every screen of the web UI). The performance modes set less than planned: see
-  section 1.
+  (STOP ALL is on every screen of the web UI except the PIN screen). The performance modes set less
+  than planned: see section 1.
 - **The questions' answers, also built on 2026-11-01:** speed-ups (HYPER now fits 4 cameras), the PIN
   option, the NVIDIA libraries downloaded on first start, the setup program (built and test-installed),
   and the folder renamed to `Desktop\TrackXen`.
@@ -124,7 +124,7 @@
 - **Launcher:** a small tray app starts both processes and opens the UI. Its menu has "Open",
   "Stop all cameras" and "Quit". (As built, TrackXen.exe is the core service with the tray icon; its
   menu has Open TrackXen, Open the logs folder and Quit TrackXen. "Stop all cameras" isn't built yet:
-  STOP ALL is on every screen of the web UI.)
+  STOP ALL is on every screen of the web UI except the PIN screen.)
 
 **Control loop, per camera:**
 1. **Find the target in room angles:** its position in the frame, plus the camera's FreeD position at
