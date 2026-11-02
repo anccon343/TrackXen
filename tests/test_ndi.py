@@ -156,3 +156,22 @@ def test_a_partial_name_inside_a_name_is_taken_once_the_search_is_over(monkeypat
     t0 = time.monotonic()
     assert started("BIRDDOG", [(0.0, "BIRDDOG-1 (CAM)")], monkeypatch, timeout=0.3) == "BIRDDOG-1 (CAM)"
     assert time.monotonic() - t0 >= 0.3  # (after waiting for a source with exactly that name)
+
+
+def test_a_partial_name_never_takes_a_longer_word_once_the_search_is_over(monkeypatch):
+    """Camera 1 is still booting when the first search ends (a PTZ camera takes far longer than 2 s): "CAM1" must
+    not take "PC (CAM10)" then either, or camera 1 is steered by camera 10's picture until the next Apply."""
+    assert found("CAM1", ["PC (CAM10)"]) is None  # (found(): the first search is over)
+    assert found("TRACKXEN SIM 1", ["PC (TRACKXEN SIM 10)"]) is None
+    assert found("BIRDDOG", ["BIRDDOG-1 (CAM)"]) == "BIRDDOG-1 (CAM)"  # a whole word of the name
+    assert found("BIRDDOG-12345", ["BIRDDOG-12345-A (CAM)"]) == "BIRDDOG-12345-A (CAM)"
+    monkeypatch.setattr(ndi_in, "Receiver", FakeReceiver)
+    receiver = ndi_in.NdiReceiver("CAM1")
+    receiver._finder = AnnouncingFinder([(0.0, "PC (CAM10)"), (0.5, "PC (CAM1)")])
+    receiver._run = lambda: None
+    with pytest.raises(LookupError, match="not found"):
+        receiver.start(timeout=0.2)
+    assert receiver.source_name == "CAM1"
+    time.sleep(0.4)
+    receiver.start(timeout=0.2)  # the worker's next try
+    assert receiver.receiver.source == "PC (CAM1)"

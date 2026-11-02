@@ -205,6 +205,7 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 | Problem light "vMix ... not connected" or "mixer ... not connected" | Is vMix running, or the mixer on? Settings → vMix & mixer: the address |
 | "The settings were changed on another device" | The page has loaded the current settings: make your changes again and Apply |
 | "No video", and the log says "NDI name ... matches several sources" | Settings → Cameras: choose the camera's full NDI name from the list |
+| "No video", and the log says "NDI source not found" while the camera is on | Part of an NDI name is taken only as whole words: "BIRDDOG-12345" finds "BIRDDOG-12345 (CAM)", "BIRDDOG-123" doesn't, and "CAM1" never takes "PC (CAM10)". Choose the camera's full NDI name from the list |
 | A "settings" warning in the log after a start | settings.json was damaged or held a value no longer accepted, and TrackXen repaired it (a damaged file is kept as `settings.json.broken-<time>`; the last good copy `settings.json.bak` or the defaults are used). Check the settings |
 | It follows the wrong person | Click the right one; add exclusion or halting areas; lower the sensitivity |
 | Too jumpy | Lower the sensitivity, widen the Pan/Tilt Halting Area, use a fixed area at the podium |

@@ -551,7 +551,7 @@ code. The suite went from 158 to 383 tests (394 with the fixes from a second rev
 - **Failed commands:** when an absolute move, a preset recall or a stop fails (or its answer is
   lost), the speeds the camera runs at count as unknown, so the stop is sent again. Before, a drive
   whose ACK was lost kept the camera turning at 11.5 °/s in the test.
-  - Found in a second review: quitting TrackXen, or removing a camera in Settings, sent its stop only
+  - Found in a third review: quitting TrackXen, or removing a camera in Settings, sent its stop only
     once, so a lost or refused stop left the camera turning and zooming with nothing left to stop it.
     That stop is now tried up to 3 times. Quitting also closed the cameras one after another once the
     control loop had ended, so each camera that didn't answer kept the next one moving 0.5-1.5 s
@@ -595,6 +595,11 @@ code. The suite went from 158 to 383 tests (394 with the fixes from a second rev
     wasn't announced yet ("CAM1" took "PC (CAM10)" while camera 1 was booting). A partial name now
     takes a source at once only when it is that source's whole host or stream name; a source that
     merely contains it ("BIRDDOG" in "BIRDDOG-1 (CAM)") is taken when the first search ends (2 s).
+  - Found in a third review: a camera still booting after those 2 s (most PTZ cameras) still got
+    "PC (CAM10)", until the next Apply. A part that splits a word of a source's name is now never
+    taken: "CAM1" never takes "PC (CAM10)", and camera 1 connects on the next try once it is announced. A saved part that ends inside a word
+    ("BIRDDOG-123" for "BIRDDOG-12345") no longer connects: "NDI source not found" in the log; choose
+    the full name from the list.
 - Other event-loop stalls removed: host names are looked up off the loop, the stats day file is read
   in pieces (worst loop lateness 1456 ms → 6 ms on a 120 MB file), `/api/log` reads only the end of
   the log, and setting the PIN hashes off the loop.

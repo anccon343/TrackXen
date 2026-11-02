@@ -53,6 +53,18 @@ def _name_parts(name: str) -> tuple[str, str]:
     return host, stream.removesuffix(")")
 
 
+def _apart(part: str, name: str) -> bool:
+    """Is `part` in `name` without splitting a word of it? "birddog" in "birddog-1 (cam)" is; "cam1" in
+    "pc (cam10)" (camera 10's source) is not."""
+    start = name.find(part)
+    while start >= 0:
+        before, after = name[start - 1:start], name[start + len(part):start + len(part) + 1]
+        if not (before.isalnum() and part[0].isalnum()) and not (after.isalnum() and part[-1].isalnum()):
+            return True
+        start = name.find(part, start + 1)
+    return False
+
+
 def to_bgr(bgrx: np.ndarray) -> np.ndarray:
     """A new BGR copy of an NDI BGRX picture. OpenCV's conversion takes 1 ms on a 1080p frame;
     numpy's copy of the first three channels took 7 ms (measured), and every frame waited for it."""
@@ -99,8 +111,10 @@ class NdiReceiver:
         """The configured source by its exact name, or by part of a name ("TRACKXEN SIM 1" also finds
         "ANTTONPC (TRACKXEN SIM 1)") when only one source has that part. A full "HOST (STREAM)" name is
         taken only as it is, so "ALTAR (CAM)" never picks "SIDEALTAR (CAM)" before its own source shows up.
-        A part that is a whole host or stream name wins; a part inside a longer one ("CAM1" in "PC (CAM10)")
-        is taken only once the first search is over, so a source not announced yet gets its chance."""
+        A part that is a whole host or stream name wins; a part inside a longer one ("BIRDDOG" in
+        "BIRDDOG-1 (CAM)") is taken only once the first search is over, so a source not announced yet gets
+        its chance, and never when it splits a word: "CAM1" never takes "PC (CAM10)", however long camera 1
+        takes to boot."""
         names, self._matches = self._finder.get_source_names(), []
         if self.source_name in names:
             return self._finder.get_source(self.source_name)
@@ -112,6 +126,8 @@ class NdiReceiver:
             whole = [name for name in matches if wanted in _name_parts(name)]
             if whole or time.monotonic() < self._search_until:  # "CAM1": "PC (CAM1)", not "PC (CAM10)"
                 matches = whole
+            else:
+                matches = [name for name in matches if _apart(wanted, name.lower())]
         self._matches = matches
         if len(matches) != 1:  # none yet, or several: don't guess which camera's video to track
             return None
