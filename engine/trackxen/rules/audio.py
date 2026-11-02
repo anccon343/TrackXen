@@ -79,6 +79,11 @@ class SpeechDetector:
     def speaking(self) -> list[int]:
         return [i + 1 for i, ch in enumerate(self.channels) if ch.speaking]
 
+    def reset(self) -> None:
+        """Forget who is speaking (no levels for a while): a channel speaks again only after its attack."""
+        for ch in self.channels:
+            ch.speaking, ch.above_since, ch.below_since = False, None, None
+
 
 @dataclass
 class CameraState:

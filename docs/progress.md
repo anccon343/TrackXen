@@ -738,6 +738,11 @@ third).
     full speed. Its on-air state now carries over too.
 - A mic waiting for the live camera is forgotten when audio-follow is switched off or the mixer
   stops sending levels.
+  - Found in a fourth review: it was only forgotten at the next vMix tally change. A camera taken off
+    air with the On Air switch could then be sent to that mic's preset, and start Auto Tracking there,
+    in a quiet room once audio-follow was switched on again or the levels came back. Switching
+    audio-follow off in Settings now forgets it at once, and who is speaking starts over with the
+    first levels taken after 2 s or more without any (mixer silent, or audio-follow off).
 - Found in a third review: switching Audio follow off for a camera (or audio-follow off in Settings)
   while a mic's cue was taking it to its preset left the cue's "start tracking there" in place, so
   the camera switched Auto Tracking on when it arrived and picked someone. That is dropped now too.

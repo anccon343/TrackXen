@@ -23,6 +23,7 @@ from trackxen.core.server import create_server
 from trackxen.core.session import CameraSession
 from trackxen.devices.visca import ViscaError
 from trackxen.integrations.vmix import Tally, VmixInput, VmixLink
+from trackxen.integrations.xair import METERS1_COUNT, MixerLink
 from trackxen.rules.audio import AudioFollowConfig, MicMapping
 from trackxen.sim.fake_camera import FakeCamera
 
@@ -773,6 +774,36 @@ def test_switching_audio_follow_off_drops_the_cue_and_its_start_of_tracking(tmp_
                 s.tick(time.monotonic())
                 assert s.move is None and not s.tracking and s.cue is None, off
         finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
+def test_switching_audio_follow_off_in_settings_forgets_a_mic_waiting_for_a_free_camera(tmp_path, workers, stub_links):
+    """Only the live camera could answer the pastor, so the mic waits. Audio-follow off in Settings forgets it at
+    once: switched on again a moment later, with that camera off air by the On Air switch (no vMix tally change)
+    and the room quiet, nothing is sent to the pastor's preset."""
+    async def scenario():
+        cfg = config("cam1")
+        cfg.audio = AudioFollowConfig(enabled=True, attack=0.0, hold=2.0, live_camera="wait",
+                                      mappings=[MicMapping(channel=1, label="Pastor", presets={"cam1": 3})])
+        app = make_app(tmp_path, cfg)
+        await app.start()
+        mixer = app.inputs.mixer = MixerLink("mixer.test", on_levels=app.inputs.on_levels)
+        try:
+            s = app.sessions["cam1"]
+            s.audio_follow = True
+            assert (await app.command({"type": "on_air", "camera": "cam1", "on": True}))["ok"]
+            mixer._meters([-10.0] + [-90.0] * (METERS1_COUNT - 1))  # the pastor speaks
+            assert 1 in app.inputs.follow.waiting and s.cue is None
+            assert (await app.command({"type": "audio_settings", "settings": {"enabled": False}}))["ok"]
+            assert app.inputs.follow.waiting == {}
+            assert (await app.command({"type": "on_air", "camera": "cam1", "on": False}))["ok"]
+            assert (await app.command({"type": "audio_settings", "settings": {"enabled": True}}))["ok"]
+            mixer._meters([-90.0] * METERS1_COUNT)  # everyone is quiet
+            assert s.cue is None and s.move is None
+        finally:
+            app.inputs.mixer = None
             await app.stop()
 
     asyncio.run(scenario())

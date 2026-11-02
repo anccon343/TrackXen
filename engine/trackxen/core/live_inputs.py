@@ -7,7 +7,7 @@ import time
 
 from trackxen.core.session import ANGLE_FIXED, TRACKING
 from trackxen.integrations.vmix import Tally, VmixLink
-from trackxen.integrations.xair import INPUT_CHANNELS, MixerLink
+from trackxen.integrations.xair import INPUT_CHANNELS, LEVELS_TIMEOUT, MixerLink
 from trackxen.rules.audio import AudioFollow, CameraState, SpeechDetector
 
 
@@ -18,6 +18,7 @@ class LiveInputs:
         self.mixer: MixerLink | None = None
         self.speech = SpeechDetector(INPUT_CHANNELS)
         self.follow = AudioFollow()
+        self._last_reading = float("-inf")  # when on_levels last took a reading (not while audio-follow is off)
 
     def start(self) -> None:
         """(Re)connect vMix and the mixer, when their addresses are set."""
@@ -71,6 +72,9 @@ class LiveInputs:
         for i, ch in enumerate(self.speech.channels):
             ch.muted, ch.fader, ch.name = self.mixer.muted[i], self.mixer.faders[i], self.mixer.names[i]
         now = time.monotonic()
+        if now - self._last_reading >= LEVELS_TIMEOUT:  # the first after a gap (mixer silent, audio-follow off):
+            self.speech.reset()  # who spoke before it is stale (a mic still waiting for a free camera is dropped)
+        self._last_reading = now
         started = self.speech.update(levels, now, cfg)
         order = [m.channel for m in cfg.mappings]
         for channel in sorted(started, key=lambda c: order.index(c) if c in order else len(order)):

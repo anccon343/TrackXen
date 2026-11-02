@@ -22,6 +22,7 @@ from trackxen.devices.udp import open_udp, resolve_async
 XAIR_PORT = 10024
 RENEW_INTERVAL = 9.5
 INFO_INTERVAL = 30  # seconds: MixerLink asks for channel names, mutes and faders again (and checks for levels)
+LEVELS_TIMEOUT = 2.0  # seconds: the mixer counts as connected while its levels arrived this recently
 METERS1_COUNT = 40
 INPUT_CHANNELS = 16
 
@@ -187,7 +188,7 @@ class MixerLink:
 
     @property
     def connected(self) -> bool:
-        return time.monotonic() - self.last_levels < 2.0
+        return time.monotonic() - self.last_levels < LEVELS_TIMEOUT
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())

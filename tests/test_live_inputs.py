@@ -3,9 +3,11 @@
 import time
 from types import SimpleNamespace
 
+from trackxen.core import live_inputs as live_inputs_module
 from trackxen.core.config import AppConfig
 from trackxen.core.live_inputs import LiveInputs
 from trackxen.core.session import IDLE
+from trackxen.integrations import xair as xair_module
 from trackxen.integrations.vmix import Tally, VmixInput, VmixLink
 from trackxen.integrations.xair import METERS1_COUNT, MixerLink
 from trackxen.rules.audio import AudioFollowConfig
@@ -119,3 +121,34 @@ def test_a_silent_mixer_drops_the_waiting_mic():
     inputs.vmix.tally = [Tally.OFF]
     inputs.on_tally()
     assert cam1.cues == [] and inputs.follow.waiting == {}
+
+
+def clock(monkeypatch) -> SimpleNamespace:
+    """A clock for LiveInputs and the mixer link that the test moves on (`.now += seconds`)."""
+    fake = SimpleNamespace(now=time.monotonic())
+    fake.monotonic = lambda: fake.now
+    monkeypatch.setattr(live_inputs_module, "time", fake)
+    monkeypatch.setattr(xair_module, "time", fake)
+    return fake
+
+
+def test_a_mic_that_waited_before_a_gap_in_the_levels_is_forgotten_when_they_return(monkeypatch):
+    """Also when no vMix tally change comes: the mic's "still speaking" is from before the gap, so a camera that
+    became free meanwhile (here by the On Air switch) must not be sent to the pastor in a quiet room."""
+    for gap in ("mixer silent", "audio-follow off"):
+        now = clock(monkeypatch)
+        inputs, cam1 = setup()
+        speak(inputs)
+        assert 1 in inputs.follow.waiting
+        audio = inputs.app.config.audio
+        if gap == "audio-follow off":
+            inputs.app.config.audio = audio.model_copy(update={"enabled": False})
+        now.now += 60.0  # a minute without levels (mixer rebooted) or with audio-follow off
+        speak(inputs, -90.0)  # (read away while audio-follow is off)
+        inputs.app.config.audio = audio
+        cam1.on_air_manual = False  # the camera is off air now (no tally change)
+        now.now += 0.05
+        speak(inputs, -90.0)  # levels again: nobody speaks
+        assert cam1.cues == [] and inputs.follow.waiting == {}, gap
+        speak(inputs)  # the pastor speaks again: a fresh cue
+        assert len(cam1.cues) == 1, gap

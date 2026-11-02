@@ -605,6 +605,7 @@ class App:
                 if not audio.enabled:  # audio-follow off: no microphone cue goes on
                     for s in self.sessions.values():
                         s.drop_cue()
+                    self.inputs.follow.waiting.clear()  # nor waits for a free camera
                 if self.config_path:
                     self.config.save(self.config_path)
                 return {"ok": True, "audio": self.config.audio.model_dump()}
