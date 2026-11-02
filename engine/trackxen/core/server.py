@@ -205,7 +205,7 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         try:
             cfg = AppConfig.model_validate(body)
         except ValidationError as e:
-            raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
+            raise refused(e) from e
         async with config_lock:
             if rev is not None and rev != getattr(app, "config_rev", 0):
                 raise HTTPException(status_code=409, detail=STALE_SETTINGS)
@@ -232,7 +232,7 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         try:
             cam = CameraConfig.model_validate(body)
         except ValidationError as e:
-            raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
+            raise refused(e) from e
         return await app.test_camera(cam)
 
     @api.get("/api/capture-devices")
@@ -305,7 +305,7 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         try:
             cfg = AppConfig.model_validate(body)
         except ValidationError as e:
-            raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
+            raise refused(e) from e
         here = app.config  # what belongs to this PC: its web address and what its hardware test found
         cfg.web_host, cfg.web_port = here.web_host, here.web_port
         cfg.performance_mode, cfg.auto_preset = here.performance_mode, here.auto_preset
@@ -420,6 +420,13 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
             app.listeners.discard(notify)
 
     return api
+
+
+
+def refused(error: ValidationError) -> HTTPException:
+    """422 saying what is wrong with the settings sent. The refused values themselves are left out: one
+    that is not a finite number (NaN, Infinity) can't be written as JSON, and the answer became a 500."""
+    return HTTPException(status_code=422, detail=error.errors(include_url=False, include_input=False))
 
 
 def tail_lines(path: Path, lines: int) -> str:

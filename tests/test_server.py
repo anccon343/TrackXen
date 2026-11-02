@@ -246,6 +246,17 @@ def test_settings_carry_a_revision_against_stale_pages(tmp_path):
     assert "_rev" not in client.get("/api/show").json()
 
 
+def test_a_value_that_is_not_a_number_is_refused_not_a_server_error(tmp_path):
+    """NaN and Infinity are refused in the settings (422); the answer must not fail to be written."""
+    client, app, _ = server(tmp_path)
+    for route, body in (("/api/config", '{"cameras": [{"id": "cam1", "units_per_degree": NaN}]}'),
+                        ("/api/show", '{"cameras": [{"id": "cam1", "units_per_degree": Infinity}]}'),
+                        ("/api/camera-test", '{"id": "cam1", "units_per_degree": NaN}')):
+        r = client.post(route, content=body, headers={"Content-Type": "application/json"})
+        assert r.status_code == 422 and r.json()["detail"][0]["loc"], route
+    assert not app.applied
+
+
 def test_loading_a_show_file_keeps_this_pcs_own_settings(tmp_path):
     client, app, _ = server(tmp_path)
     app.config.performance_mode, app.config.auto_preset = "light", "low"
