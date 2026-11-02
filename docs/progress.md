@@ -549,6 +549,10 @@ code. The suite went from 158 to 383 tests.
 - **Slow corrections:** an axis whose wanted speed rounds to step 0 now settles inside the dead zone,
   or moves at the slowest step outside it. Before, it could stay "moving" at step 0 for good, which
   also blocked Display Size and Auto Zoom (46 of 288 simulated latency cases; 0 now).
+  - Found in a second review: with the Halting Area off (or a very narrow one) on a tight shot, the
+    slowest step coasted past the tiny dead zone during the camera's delay, so the camera started and
+    stopped 2-5 times a second around a person standing still. It now also settles within the
+    distance the slowest step coasts in the lookahead time (0.12 s; about 0.2° on a PTZOptics G2).
 - **Old positions:** a position older than 2 s (FreeD and VISCA inquiries both stopped) counts as
   unknown. Tracking sends stops instead of steering by a frozen position.
 - **Acceleration limit:** two commands at the same moment no longer skip it.

@@ -223,6 +223,17 @@ def test_closed_loop_ptzoptics_tight_shot_settles_and_zooms():
     assert abs(ex) < framing.dead_zone_x * W and abs(ey) < framing.dead_zone_y * H
 
 
+def test_halting_area_off_tight_shot_comes_to_rest_on_a_still_person():
+    """Halting Area off (dead zone 0.01 = 0.06 deg at 6 deg wide) with camera latency: the slowest step coasts
+    past such a tiny zone, so the step-1 floor must not keep starting the camera to and fro (hunting)."""
+    lens, speeds = ptz_lens_speeds()
+    framing = Framing(dead_zone_x=0.01, dead_zone_y=0.01)
+    _, commands, _, _ = simulate(lambda t: (0.6, 0.3), seconds=20, framing=framing, start_zoom_hfov=6.0,
+                                 command_delay=0.1, video_delay=0.2, lens=lens, speeds=speeds)
+    tail = [c for c in commands if c[0] > 14]
+    assert all(c[1] == 0 and c[2] == 0 for c in tail), sorted({(c[1], c[2]) for c in tail})
+
+
 def test_two_commands_at_the_same_moment_keep_the_acceleration_limit():
     """K56: dt == 0 means no time passed, so the speed may not change (not: any change allowed)."""
     ctrl = Controller()

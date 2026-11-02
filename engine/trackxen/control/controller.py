@@ -185,8 +185,11 @@ class Controller:
             self._velocity[axis] = wanted
             steps[axis] = SpeedTable.step_for(table, wanted)
             if self._moving[axis] and steps[axis] == 0:  # slower than the camera's slowest step
-                if abs(err) <= dead[axis]:
-                    self._moving[axis] = False  # inside the dead zone: settle here, it would get no closer
+                # Settle inside the dead zone (it would get no closer), and also within the distance the
+                # slowest step coasts during the video and command delays: closer than that, step 1 would
+                # overshoot a tiny dead zone (Halting Area off, tight shot) and hunt to and fro.
+                if abs(err) <= max(dead[axis], table[0] * m.lookahead):
+                    self._moving[axis] = False
                 else:  # outside it: the slowest step, or the camera would never get there
                     steps[axis] = 1 if (wanted if wanted else err) > 0 else -1
 
