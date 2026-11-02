@@ -13,7 +13,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\sim_load.py          (optional, with --sim-cameras 4: all cameras at once, measured)
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
-.venv\Scripts\python -m pytest                  (403 tests)
+.venv\Scripts\python -m pytest                  (411 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -505,7 +505,7 @@ A code review listed defects across the engine, the UI, the tools and the instal
 fixed in ten groups (session, control, devices, vision, ops, server, lifecycle, app, UI, tools and
 docs) and merged here. Where a test could show a defect, it was written first and failed on the old
 code. The suite went from 158 to 383 tests (394 with the fixes from a second review, 403 with a
-third).
+third, 411 with a fourth).
 
 **Safety: the watchdog and the control loop keep running**
 - **Watchdog:** each check runs inside try/except. An error is logged (the same one at most every
@@ -788,8 +788,6 @@ third).
 - STOP ALL on the PIN screen: the engine refuses commands from a device without the PIN.
 - The registration frame stays on if a device dies mid-registration, until the next vision restart.
 - Restarting only the vMix or mixer link whose address changed; the "(development)" version label.
-- `test_ptzoptics.py::test_stream_source_decodes_and_keeps_the_newest_frame` fails now and then (also
-  on the old code): the file source reopens between loops.
 
 ## Audits
 
