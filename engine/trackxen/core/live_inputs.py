@@ -38,7 +38,13 @@ class LiveInputs:
     # --- vMix tally ----------------------------------------------------------------------------
 
     def on_tally(self) -> None:
-        """vMix tally changed (or vMix went away): which cameras are on Program now."""
+        """vMix tally changed (or vMix went away): which cameras are on Program now.
+
+        While vMix is set up but not connected (or has not sent its tally yet), every camera keeps
+        its last known state: a camera that may still be live must not look free to audio-follow.
+        """
+        if self.vmix and not (self.vmix.connected and self.vmix.tally):
+            return
         for s in self.app.sessions.values():
             state = self.vmix.state_of(s.cfg.vmix_input) if self.vmix else None
             live = state == Tally.PROGRAM
@@ -69,6 +75,9 @@ class LiveInputs:
 
     def _answer_waiting(self, now: float) -> None:
         """Mics that are still speaking but found only live cameras: maybe one is free now."""
+        if not self.app.config.audio.enabled or not (self.mixer and self.mixer.connected):
+            self.follow.waiting.clear()  # audio-follow is off, or no levels arrive: who is speaking is unknown
+            return
         speaking = set(self.speech.speaking())
         for channel in list(self.follow.waiting):
             if channel not in speaking:
