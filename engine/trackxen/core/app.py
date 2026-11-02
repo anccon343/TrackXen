@@ -109,6 +109,8 @@ class App:
         self._jobs: set[asyncio.Task] = set()  # background jobs (vision worker restarts)
         self._config_lock = asyncio.Lock()  # one settings apply or vision worker restart at a time
         self._link_retry: dict[str, tuple[float, float, str]] = {}  # camera -> (next try, delay, error)
+        self._carry: dict[str, tuple[bool, bool | None]] = {}  # camera -> (audio_follow, on_air_manual) over an apply
+        self._stopped_in_apply = False  # STOP ALL was pressed while settings were being applied
         self._restart_delay = 0.0  # delay of the last crash restart (doubles while the worker keeps crashing)
         self._workers_started = 0
         self._errors_logged: dict[tuple[str, str], float] = {}  # (where, camera) -> when last logged
@@ -152,8 +154,14 @@ class App:
                 counters=self.counters, log=self.log)
             if cam.host:
                 await self._open_link(cam.id, link)
-            self.sessions[cam.id] = CameraSession(cam, link, self.counters, self.log)
-            self.sessions[cam.id].face_names = self.faces.names
+            session = CameraSession(cam, link, self.counters, self.log)
+            session.face_names = self.faces.names
+            carried = self._carry.pop(cam.id, None)
+            if carried:  # Audio follow and On Air stay as the operator set them (apply_config)
+                session.audio_follow, session.on_air_manual = carried
+            if self._stopped_in_apply:  # STOP ALL pressed while settings were applied: it holds here too
+                session.audio_follow = False
+            self.sessions[cam.id] = session
 
     async def _open_link(self, camera: str, link: CameraLink) -> None:
         """Open a camera's connection; one that can't be opened now is tried again later (_retry_links)."""
@@ -173,48 +181,54 @@ class App:
         new settings are in place before anything is awaited, so commands meanwhile change those.
         """
         async with self._config_lock:
-            if not whole:
-                running = {c.id: c for c in self.config.cameras}
-                for cam in config.cameras:
-                    if cam.id in running:
-                        old = running[cam.id]
-                        cam.slots, cam.active_slot, cam.preset_links = old.slots, old.active_slot, old.preset_links
-                        cam.faces, cam.vmix_input = old.faces, old.vmix_input
-                config.vmix, config.mixer, config.audio = self.config.vmix, self.config.mixer, self.config.audio
-                config.detection = self.config.detection
-            else:  # a show file from elsewhere: faces it names that this PC doesn't have are left out
-                for cam in config.cameras:
-                    cam.faces = [f for f in cam.faces if f.id in self.faces.store.faces]
-            same_cameras = not whole and _camera_setup(config) == _camera_setup(self.config)
-            if same_cameras:  # e.g. only the performance mode changed: the cameras keep running and tracking
-                config.cameras = self.config.cameras
-            if self.config_path:
-                config.save(self.config_path)
-            closing = [] if same_cameras else list(self.sessions.values())
-            switches = {s.cfg.id: (s.audio_follow, s.on_air_manual) for s in closing}  # the operator's
-            if not same_cameras:
-                self._link_retry.clear()  # (a try still under way closes its connection when it ends)
-            for cam in self.config.cameras:  # measured again by the new worker (a camera without video now: not at all)
-                self.counters.forget(f"{cam.id}.")
-            self.config = config
-            await self._stop_worker()
-            if not same_cameras:
-                for s in closing:
-                    await s.link.close()
-                self.sessions.clear()
-            self.limits.expected_fps.clear()
-            if not same_cameras:
-                await self._start_cameras()
-                for i, (follow, on_air) in switches.items():  # Audio follow and On Air stay as they were set
-                    if i in self.sessions:
-                        self.sessions[i].audio_follow, self.sessions[i].on_air_manual = follow, on_air
-            self._start_worker()
-            if whole:
-                self.inputs.start()
-            self.inputs.on_tally()
-            self.config_rev += 1
-            self.log.event("settings", "show file loaded" if whole else
-                           "settings saved and applied" + ("" if not same_cameras else " (vision restarted)"))
+            self._carry, self._stopped_in_apply = {}, False  # (a STOP ALL during a vision restart doesn't count)
+            try:
+                await self._apply(config, whole)
+            finally:
+                self._carry, self._stopped_in_apply = {}, False
+
+    async def _apply(self, config: AppConfig, whole: bool) -> None:
+        if not whole:
+            running = {c.id: c for c in self.config.cameras}
+            for cam in config.cameras:
+                if cam.id in running:
+                    old = running[cam.id]
+                    cam.slots, cam.active_slot, cam.preset_links = old.slots, old.active_slot, old.preset_links
+                    cam.faces, cam.vmix_input = old.faces, old.vmix_input
+            config.vmix, config.mixer, config.audio = self.config.vmix, self.config.mixer, self.config.audio
+            config.detection = self.config.detection
+        else:  # a show file from elsewhere: faces it names that this PC doesn't have are left out
+            for cam in config.cameras:
+                cam.faces = [f for f in cam.faces if f.id in self.faces.store.faces]
+        same_cameras = not whole and _camera_setup(config) == _camera_setup(self.config)
+        if same_cameras:  # e.g. only the performance mode changed: the cameras keep running and tracking
+            config.cameras = self.config.cameras
+        if self.config_path:
+            config.save(self.config_path)
+        closing = [] if same_cameras else list(self.sessions.values())
+        if not same_cameras:
+            self._link_retry.clear()  # (a try still under way closes its connection when it ends)
+        for cam in self.config.cameras:  # measured again by the new worker (a camera without video now: not at all)
+            self.counters.forget(f"{cam.id}.")
+        self.config = config
+        await self._stop_worker()
+        if not same_cameras:
+            for s in closing:
+                await s.link.close()
+            # the operator's Audio follow and On Air switches, as they are now (also a STOP ALL meanwhile),
+            # go to the new sessions (_start_cameras)
+            self._carry = {s.cfg.id: (s.audio_follow, s.on_air_manual) for s in closing}
+            self.sessions.clear()
+        self.limits.expected_fps.clear()
+        if not same_cameras:
+            await self._start_cameras()
+        self._start_worker()
+        if whole:
+            self.inputs.start()
+        self.inputs.on_tally()
+        self.config_rev += 1
+        self.log.event("settings", "show file loaded" if whole else
+                       "settings saved and applied" + ("" if not same_cameras else " (vision restarted)"))
 
     def _on_loop_error(self, loop, context: dict) -> None:
         """Unexpected errors anywhere in the app go to the text log (and the console)."""
@@ -596,6 +610,9 @@ class App:
         switches it back on); then every camera is stopped at once (one that doesn't answer doesn't hold
         up the others)."""
         sessions = list(self.sessions.values())
+        if self._config_lock.locked():  # settings being applied: cameras still to be made keep it off too
+            self._stopped_in_apply = True
+            self._carry = {i: (False, on_air) for i, (_, on_air) in self._carry.items()}
         for s in sessions:
             s.move, s.cue, s.audio_follow = None, None, False
             try:

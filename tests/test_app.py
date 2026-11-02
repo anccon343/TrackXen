@@ -503,6 +503,42 @@ def test_stop_all_stops_every_camera_at_once(tmp_path, workers, stub_links):
     asyncio.run(scenario())
 
 
+def test_stop_all_while_settings_are_applied_keeps_audio_follow_off(tmp_path, workers, stub_links, monkeypatch):
+    """The operator's Audio follow and On Air switches carry over to the cameras an Apply makes again,
+    and a STOP ALL pressed while the cameras are being started again is not undone by that."""
+    async def scenario():
+        app = make_app(tmp_path, config("cam1", "cam2"))
+        await app.start()
+        try:
+            app.sessions["cam1"].audio_follow = False
+            app.sessions["cam2"].on_air_manual = True
+            renamed = app.config.model_copy(deep=True)
+            renamed.cameras[0].name = "Pulpit"  # a camera change: the sessions are made again
+            await app.apply_config(renamed)
+            cam1, cam2 = app.sessions["cam1"], app.sessions["cam2"]
+            assert not cam1.audio_follow and cam2.audio_follow and cam2.on_air_manual is True
+
+            async def slow_start(link):
+                await asyncio.sleep(0.2)  # each camera connection takes a while to open
+                link.started = True
+
+            monkeypatch.setattr(StubLink, "start", slow_start)
+            cam1.audio_follow = True
+            renamed = app.config.model_copy(deep=True)
+            renamed.cameras[1].name = "Choir"
+            saving = asyncio.create_task(app.apply_config(renamed))
+            assert await until(lambda: "cam1" in app.sessions and app.sessions["cam1"] is not cam1
+                               and "cam2" not in app.sessions)
+            assert (await app.command({"type": "stop_all"}))["ok"]  # cam1 is made again, cam2 not yet
+            await saving
+            assert not [s for s in app.sessions.values() if s.audio_follow or s.tracking]
+            assert app.sessions["cam2"].on_air_manual is True
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
 # --- commands -------------------------------------------------------------------------------------
 
 
