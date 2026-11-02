@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from pythonosc.osc_message import OscMessage
 from pythonosc.osc_message_builder import OscMessageBuilder
 
-from trackxen.devices.udp import open_udp, resolve
+from trackxen.devices.udp import open_udp, resolve_async
 
 XAIR_PORT = 10024
 RENEW_INTERVAL = 9.5
+INFO_INTERVAL = 30  # seconds: MixerLink asks for channel names, mutes and faders again (and checks for levels)
 METERS1_COUNT = 40
 INPUT_CHANNELS = 16
 
@@ -119,7 +120,7 @@ class XAirClient:
 
     async def connect(self) -> None:
         # One socket for sending and receiving: the mixer replies to the sender's port
-        self._remote = (resolve(self.host), self.port)
+        self._remote = (await resolve_async(self.host), self.port)
         self._transport, _ = await open_udp(lambda: _Protocol(self._on_message))
         self.pulse()
         self._pulse_task = asyncio.create_task(self._pulse_loop())
@@ -168,7 +169,8 @@ class XAirClient:
 class MixerLink:
     """An MR18 / X Air for audio-follow: input levels (about 20 a second), the mixer's channel
     names, mutes and faders (asked for again every 30 s; changes arrive through /xremote).
-    UDP has no connection: "connected" means levels arrived in the last 2 seconds."""
+    UDP has no connection: "connected" means levels arrived in the last 2 seconds. Still no levels
+    at the next 30 s mark: it starts again with a new socket."""
 
     def __init__(self, host: str, port: int = XAIR_PORT, on_levels: Callable[[list[float]], None] | None = None,
                  log=None):
@@ -197,22 +199,27 @@ class MixerLink:
             self._client.close()
 
     async def _run(self) -> None:
-        while self._client is None:
-            try:
-                self._client = XAirClient(self.host, self.port, on_meters=self._meters, on_value=self._value)
-                await self._client.connect()
-            except OSError as e:  # e.g. the name doesn't resolve yet
-                self._client, self.error = None, str(e)
-                await asyncio.sleep(5.0)
         while True:
+            while self._client is None:
+                try:
+                    self._client = XAirClient(self.host, self.port, on_meters=self._meters, on_value=self._value)
+                    await self._client.connect()
+                    self.error = ""
+                except (OSError, ValueError) as e:  # e.g. the name doesn't resolve yet (ValueError: "192.168.1..60")
+                    self._client.close()
+                    self._client, self.error = None, str(e) or type(e).__name__
+                    await asyncio.sleep(5.0)
             self._client.request_channel_info()
-            for _ in range(30):
+            for _ in range(INFO_INTERVAL):
                 await asyncio.sleep(1.0)
                 if self.connected != self._was_connected:
                     self._was_connected = self.connected
                     if self.log:
                         self.log.event("mixer", f"mixer {self.host}: " + ("levels arriving" if self.connected else "no levels"),
                                        level="info" if self.connected else "warning")
+            if not self.connected:  # (on Windows one receive error ends a UDP socket's reading for good)
+                self._client.close()
+                self._client = None
 
     def _meters(self, levels: list[float]) -> None:
         self.levels, self.last_levels = levels, time.monotonic()

@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import pytest
 
@@ -95,5 +96,138 @@ def test_client_times_out_without_camera():
                 await client.inquiry(visca.inq_power())
         finally:
             client.close()
+
+    asyncio.run(run())
+
+
+def test_position_replies_must_have_their_own_length():
+    """Replies are matched by socket only: a late pan/tilt answer (8 nibbles) taken for the zoom one was decoded as
+    zoom 0x0123 without an error, and 5-nibble pan replies were cut silently."""
+    assert visca.decode_position(bytes.fromhex("00 04 00 00")) == 0x0400
+    with pytest.raises(ValueError):
+        visca.decode_position(bytes.fromhex("00 01 02 03 00 00 00 05"))
+    with pytest.raises(ValueError):
+        visca.decode_pan_tilt(bytes.fromhex("00 00 00 06 04 00 00 03 02"))
+    with pytest.raises(ValueError):
+        visca.decode_pan_tilt(bytes.fromhex("00 04 00 00"))
+    with pytest.raises(ValueError):
+        visca.decode_position(bytes.fromhex("00 14 00 00"))  # not nibbles
+
+
+class LateErrors(asyncio.DatagramProtocol):
+    """A plain-VISCA camera that reports an earlier move as cancelled (socket 1) just before ACKing the new
+    command on socket 2, then completes it there."""
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, addr):
+        self.transport.sendto(bytes.fromhex("90 61 04 ff"), addr)
+        self.transport.sendto(bytes.fromhex("90 42 ff"), addr)
+        self.transport.sendto(bytes.fromhex("90 52 ff"), addr)
+
+
+def test_an_error_about_an_earlier_command_is_not_taken_for_the_answer():
+    async def run():
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(LateErrors, local_addr=("127.0.0.1", 0))
+        client = visca.open_client("127.0.0.1", transport.get_extra_info("sockname")[1], "udp", timeout=0.5)
+        await client.connect()
+        try:
+            reply = await client.command(visca.pan_tilt_drive(5, 5, visca.PanDir.RIGHT, visca.TiltDir.UP))
+            assert reply.kind is visca.ReplyKind.ACK and reply.socket == 2
+            reply = await client.command(visca.zoom_stop(), wait_completion=True)
+            assert reply.kind is visca.ReplyKind.COMPLETION and reply.socket == 2
+        finally:
+            client.close()
+            transport.close()
+
+    asyncio.run(run())
+
+
+def test_a_slow_name_lookup_does_not_stop_the_event_loop(monkeypatch):
+    """Every camera loop and the UI share one event loop; gethostbyname ran on it."""
+    from trackxen.devices import udp
+
+    real = udp.socket.gethostbyname
+
+    def slow(host):
+        if host == "camera.slow.test":
+            time.sleep(0.4)
+            return "127.0.0.1"
+        return real(host)
+
+    monkeypatch.setattr(udp.socket, "gethostbyname", slow)
+
+    async def run():
+        gaps, done = [], False
+
+        async def tick():
+            last = time.perf_counter()
+            while not done:
+                await asyncio.sleep(0.01)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        ticker = asyncio.create_task(tick())
+        await asyncio.sleep(0.05)
+        client = visca.ViscaClient("camera.slow.test", 9, use_header=False)
+        await client.connect()
+        done = True
+        await ticker
+        client.close()
+        assert client._remote == ("127.0.0.1", 9)
+        assert max(gaps) < 0.2
+        assert await udp.resolve_async("192.168.1.60") == "192.168.1.60"  # an address needs no lookup
+
+    asyncio.run(run())
+
+
+def test_a_client_closed_while_connecting_does_not_stay_connected(monkeypatch):
+    """CameraLink replaces a client that is still connecting; that connection then stayed open for good (a
+    PTZOptics may take only one TCP control connection)."""
+    async def run():
+        open_now = []
+
+        async def camera(reader, writer):
+            open_now.append(writer)
+            await reader.read()
+            open_now.remove(writer)
+            writer.close()
+
+        server = await asyncio.start_server(camera, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        gate, real = asyncio.Event(), asyncio.open_connection
+
+        async def slow_open(*args, **kwargs):
+            await gate.wait()  # the camera is still booting
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "open_connection", slow_open)
+        client = visca.open_client("127.0.0.1", port, "tcp", timeout=0.5)
+        connecting = asyncio.create_task(client.connect())
+        await asyncio.sleep(0.05)
+        client.close()
+        gate.set()
+        with pytest.raises(ConnectionError):
+            await connecting
+        await asyncio.sleep(0.2)
+        assert not open_now and client._writer is None
+        server.close()
+
+    asyncio.run(run())
+
+
+def test_a_tcp_connection_the_camera_closed_is_closed_here_too():
+    async def run():
+        server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+        client = visca.open_client("127.0.0.1", server.sockets[0].getsockname()[1], "tcp", timeout=0.3)
+        await client.connect()
+        writer = client._writer
+        await asyncio.sleep(0.1)  # the camera hung up
+        assert client._writer is None and writer.is_closing()
+        client.close()
+        server.close()
 
     asyncio.run(run())

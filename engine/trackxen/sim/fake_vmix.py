@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from xml.sax.saxutils import escape, quoteattr
 
 INPUTS = [
     (1, "NDI", "BIRDDOG-CAM1 (CAM)"),
@@ -14,15 +15,18 @@ INPUTS = [
 
 
 def state_xml(inputs_list=INPUTS) -> str:
+    """The vMix state document; an input is (number, type, title) or (number, type, title, key)."""
     inputs = "".join(
-        f'<input key="key-{n}" number="{n}" type="{t}" title="{title}" shortTitle="{title}" '
-        f'state="Running">{title}</input>'
-        for n, t, title in inputs_list)
+        f'<input key={quoteattr(key[0] if key else f"key-{n}")} number="{n}" type="{t}" title={quoteattr(title)} '
+        f'shortTitle={quoteattr(title)} state="Running">{escape(title)}</input>'
+        for n, t, title, *key in inputs_list)
     return f"<vmix><version>28.0.0.0</version><inputs>{inputs}</inputs></vmix>"
 
 
 class FakeVmix:
-    """`first_title` renames input 1 (e.g. to the simulator's NDI source, so TrackXen can match it)."""
+    """`first_title` renames input 1 (e.g. to the simulator's NDI source, so TrackXen can match it).
+    `stop()` hangs up on every client too, like vMix quitting; `stall_xml` leaves that many XML
+    requests unanswered, like a vMix too busy to answer in time."""
 
     def __init__(self, cycle_seconds: float = 3.0, first_title: str = ""):
         self.cycle_seconds = cycle_seconds
@@ -30,7 +34,10 @@ class FakeVmix:
         if first_title:
             self.inputs[0] = (1, "NDI", first_title)
         self.program, self.preview = 1, 2
+        self.stall_xml = 0
+        self.xml_requests = 0
         self._server: asyncio.base_events.Server | None = None
+        self._clients: set[asyncio.StreamWriter] = set()
         self._subscribers: set[asyncio.StreamWriter] = set()
         self._task: asyncio.Task | None = None
 
@@ -49,13 +56,20 @@ class FakeVmix:
         if self._task:
             self._task.cancel()
         if self._server:
-            self._server.close()
+            self._server.close()  # (stops listening only: the clients' connections stay open)
+        for writer in list(self._clients):
+            writer.close()
 
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._clients.add(writer)
         try:
             while line := await reader.readline():
                 cmd = line.decode().strip().upper()
                 if cmd == "XML":
+                    self.xml_requests += 1
+                    if self.stall_xml > 0:
+                        self.stall_xml -= 1
+                        continue
                     body = state_xml(self.inputs).encode()
                     writer.write(f"XML {len(body)}\r\n".encode() + body)
                 elif cmd == "TALLY":
@@ -67,17 +81,22 @@ class FakeVmix:
         except ConnectionError:
             pass
         finally:
+            self._clients.discard(writer)
             self._subscribers.discard(writer)
             writer.close()
+
+    async def push_tally(self) -> None:
+        """Send the tally to the subscribers, as vMix does on every change."""
+        for w in list(self._subscribers):
+            try:
+                w.write(self.tally_line().encode())
+                await w.drain()
+            except ConnectionError:
+                self._subscribers.discard(w)
 
     async def _cycle(self) -> None:
         cams = 4
         while True:
             await asyncio.sleep(self.cycle_seconds)
             self.program, self.preview = self.preview, self.preview % cams + 1
-            for w in list(self._subscribers):
-                try:
-                    w.write(self.tally_line().encode())
-                    await w.drain()
-                except ConnectionError:
-                    self._subscribers.discard(w)
+            await self.push_tally()

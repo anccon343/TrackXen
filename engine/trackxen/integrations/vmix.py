@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from dataclasses import dataclass
 
 VMIX_PORT = 8099
+REREAD_INTERVAL = 10.0  # seconds between input list reads
+RECONNECT_DELAY = 3.0
+STALE_GRACE = 20.0  # seconds the last tally is kept after the link drops, so a blip doesn't take the live camera off air
 
 
 class Tally(enum.IntEnum):
@@ -108,7 +112,11 @@ class VmixClient:
 
 class VmixLink:
     """Stays connected to vMix: the input list (re-read every 10 s, which also notices a dead
-    connection) and live tally on a second connection. Reconnects by itself every 3 s."""
+    connection) and live tally on a second connection. Reconnects by itself every 3 s.
+
+    When the link drops, the last tally is kept for STALE_GRACE seconds (`connected` is False at once):
+    treating the live camera as off Program on a short outage lifted its on-air limits and let
+    audio-follow send it to a preset while it was still on air."""
 
     def __init__(self, host: str, port: int = VMIX_PORT, on_change: Callable[[], None] | None = None, log=None):
         self.host, self.port, self.on_change, self.log = host, port, on_change, log
@@ -117,6 +125,7 @@ class VmixLink:
         self.connected = False
         self.error = ""
         self._task: asyncio.Task | None = None
+        self._lost_at = 0.0  # when the link last dropped
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
@@ -141,14 +150,27 @@ class VmixLink:
         while True:
             try:
                 await self._session()
-            except (OSError, ConnectionError, TimeoutError, ValueError, ET.ParseError) as e:
+            except Exception as e:  # noqa: BLE001 - whatever ended it (also e.g. asyncio.IncompleteReadError), reconnect
                 self.error = str(e) or type(e).__name__
-            if self.connected and self.log:
-                self.log.event("vmix", f"vMix connection lost: {self.error}", level="warning")
-            self.connected, self.tally = False, []
-            if self.on_change:
-                self.on_change()
-            await asyncio.sleep(3.0)
+            if self.connected:
+                self._lost_at = time.monotonic()
+                if self.log:
+                    self.log.event("vmix", f"vMix connection lost: {self.error}", level="warning")
+            self.connected = False
+            if self.tally and time.monotonic() - self._lost_at >= STALE_GRACE:
+                self.tally = []
+                self._changed()
+            await asyncio.sleep(RECONNECT_DELAY)
+
+    def _changed(self) -> None:
+        """Tell the owner the tally (or the input numbering) changed; its errors must not end the link."""
+        if not self.on_change:
+            return
+        try:
+            self.on_change()
+        except Exception as e:  # noqa: BLE001 - keep following vMix
+            if self.log:
+                self.log.event("vmix", f"error handling a vMix tally change: {e!r}", level="error")
 
     async def _session(self) -> None:
         tally_conn, xml_conn = VmixClient(self.host, self.port), VmixClient(self.host, self.port)
@@ -173,13 +195,25 @@ class VmixLink:
             xml_conn.close()
 
     async def _follow_tally(self, conn: VmixClient) -> None:
+        first = True  # (the first one of a connection: the inputs may have been renumbered while we were away)
         async for tally in conn.tally_events():
-            if tally != self.tally:
-                self.tally = tally
-                if self.on_change:
-                    self.on_change()
+            if tally != self.tally or first:
+                self.tally, first = tally, False
+                self._changed()
 
     async def _reread_inputs(self, conn: VmixClient) -> None:
-        while True:
-            await asyncio.sleep(10.0)
-            self.inputs = parse_inputs(await conn.request_xml())
+        try:
+            while True:
+                await asyncio.sleep(REREAD_INTERVAL)
+                try:
+                    inputs = parse_inputs(await conn.request_xml())
+                except Exception:  # noqa: BLE001 - slow or garbled: once more on a new connection, so the tally
+                    conn.close()  # connection isn't dropped for it; if that fails too, vMix is gone
+                    conn = VmixClient(self.host, self.port)
+                    await conn.connect()
+                    inputs = parse_inputs(await conn.request_xml())
+                if inputs != self.inputs:  # inputs added, removed or moved: the tally digits mean other inputs now
+                    self.inputs = inputs
+                    self._changed()
+        finally:
+            conn.close()

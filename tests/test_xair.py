@@ -54,3 +54,49 @@ def test_client_against_fake_mixer():
         assert values["/ch/02/mix/on"] == [1]
 
     asyncio.run(run())
+
+
+def test_a_malformed_mixer_address_is_shown_and_retried():
+    """'192.168.1..60' raises UnicodeError (a ValueError) from the name lookup: the link's task died silently."""
+    async def run():
+        link = xair.MixerLink("192.168.1..60")
+        link.start()
+        try:
+            for _ in range(50):
+                if link.error:
+                    break
+                await asyncio.sleep(0.02)
+            assert link.error and not link._task.done() and not link.connected
+        finally:
+            link.stop()
+
+    asyncio.run(run())
+
+
+def test_the_mixer_link_starts_again_when_levels_stop(monkeypatch):
+    """A socket that stopped receiving (on Windows one receive error ends reading for good) was never replaced."""
+    monkeypatch.setattr(xair, "INFO_INTERVAL", 1)
+
+    async def run():
+        mixer = FakeMixer()
+        port = await mixer.start(port=0)
+        link = xair.MixerLink("127.0.0.1", port)
+        link.start()
+        try:
+            for _ in range(100):
+                if link.connected:
+                    break
+                await asyncio.sleep(0.02)
+            assert link.connected
+            dead = link._client
+            dead._transport.get_protocol().on_message = lambda *_: None  # it hears nothing any more
+            for _ in range(300):
+                if link._client not in (None, dead) and link.connected:
+                    break
+                await asyncio.sleep(0.02)
+            assert link._client is not dead and link.connected
+        finally:
+            link.stop()
+            mixer.stop()
+
+    asyncio.run(run())
