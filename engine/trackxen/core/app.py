@@ -97,6 +97,8 @@ class App:
         self._loop = asyncio.get_running_loop()
         self._loop.set_exception_handler(self._on_loop_error)
         self.log.event("app", f"started with {len(self.config.cameras)} camera(s)")
+        for note in self.config.load_notes:  # settings.json had to be repaired or replaced
+            self.log.event("settings", note, level="warning")
         await self._start_cameras()
         if self.gpu_libs and self.gpu_libs.state != "not_needed":
             if await asyncio.to_thread(self.gpu_libs.check):  # (hashes each file once, the first time)
@@ -149,6 +151,7 @@ class App:
         if self.config_path:
             config.save(self.config_path)
         self._stop_worker()
+        switches = {i: (s.audio_follow, s.on_air_manual) for i, s in self.sessions.items()}  # the operator's
         if not same_cameras:
             for s in self.sessions.values():
                 await s.link.close()
@@ -157,6 +160,9 @@ class App:
         self.limits.expected_fps.clear()
         if not same_cameras:
             await self._start_cameras()
+            for i, (follow, on_air) in switches.items():  # Audio follow and On Air stay as they were set
+                if i in self.sessions:
+                    self.sessions[i].audio_follow, self.sessions[i].on_air_manual = follow, on_air
         self._start_worker()
         if whole:
             self.inputs.start()
@@ -343,10 +349,14 @@ class App:
                 self.gpu_libs.retry()
             return {"ok": True}
         if kind == "connections":  # vMix and mixer addresses: only those links restart
-            for key in ("vmix", "mixer"):
-                if key in cmd:
-                    current = getattr(self.config, key)
-                    setattr(self.config, key, type(current).model_validate({**current.model_dump(), **cmd[key]}))
+            try:
+                new = {key: type(getattr(self.config, key)).model_validate({**getattr(self.config, key).model_dump(),
+                                                                             **cmd[key]})
+                       for key in ("vmix", "mixer") if key in cmd}
+            except (ValueError, TypeError) as e:  # e.g. a port outside 1..65535: nothing changes
+                return {"ok": False, "error": str(e)}
+            for key, value in new.items():
+                setattr(self.config, key, value)
             if self.config_path:
                 self.config.save(self.config_path)
             self.inputs.start()
@@ -388,6 +398,8 @@ class App:
             return {"ok": True}
         if kind == "audio_follow":
             session.audio_follow = bool(cmd["on"])
+            if not session.audio_follow:
+                session.cue = None  # a microphone still waiting for its person doesn't pick them any more
             return {"ok": True}
         if kind == "vmix_input":  # which vMix input shows this camera (key or number; "" = none)
             session.cfg.vmix_input = str(cmd.get("input", ""))

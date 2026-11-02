@@ -1,7 +1,9 @@
 import time
 
+import pytest
+
 from trackxen.control.camera import Pose
-from trackxen.core.config import CameraConfig
+from trackxen.core.config import CameraConfig, FaceRef
 from trackxen.core.session import ANGLE_FIXED, LOST, NO_TARGET, SEARCHING, TRACKING, CameraSession
 from trackxen.core.tracking_settings import PresetLink
 
@@ -338,3 +340,201 @@ def test_audio_cue_goes_to_the_preset_then_frames_the_person_there():
     assert s.tracking
     s.on_tracks(message([track(5, 300), track(6, 1000)]))  # 6 is nearest the middle of the picture
     assert s.target_id == 6 and log.said("audio: Pastor") and s.cue is None
+
+
+def face_track(tid, cx, face, **kw):
+    return {**track(tid, cx, **kw), "face": {"id": face, "score": 0.6}}
+
+
+def test_a_new_vision_worker_does_not_make_whoever_gets_the_old_id_the_target():
+    s, log = new_session()
+    s.on_tracks(message([track(2, 1500)]))
+    s.select_id(2)
+    s.set_tracking(True)
+    s.on_tracks(message([track(2, 1500)]))
+    requests, gotos = list(s.link.requests), list(s.link.gotos)
+    s.worker_restarted()
+    assert s.link.requests == requests and s.link.gotos == gotos  # no camera command of its own
+    assert s.select_at(1500 / W, 540 / H) == (None, "nobody in the picture")  # the old picture is gone
+    # the new worker counts from 1 again: the target is now 1, and 2 is someone else far away
+    s.on_tracks(message([track(1, 1500, age=0.1), track(2, 300, age=0.1)]))
+    assert s.target_id == 1 and log.said("re-found as person 1")
+    s.on_tracks(message([track(1, 1500, age=0.2), track(2, 300, age=0.2)]))
+    assert s.target_id == 1
+
+
+def test_after_a_new_vision_worker_the_target_is_found_again_by_face():
+    s, _ = new_session()
+    s.on_tracks(message([face_track(2, 1500, "pastor")]))
+    s.select_id(2)
+    s.set_tracking(True)
+    s.on_tracks(message([face_track(2, 1500, "pastor")]))
+    s.worker_restarted()
+    assert s.target_face == "pastor"
+    s.on_tracks(message([face_track(1, 300, "pastor", age=0.1), track(2, 1500, age=0.1)]))
+    assert s.target_id == 1
+
+
+FIXED_AREA = {"0": {"enabled": True, "left": -5, "right": 5, "top": 10, "bottom": -5,
+                    "view": {"set": True, "pan": 0.5, "tilt": 3.0, "zoom": 4000.0}}}
+
+
+def test_fixed_area_waits_while_the_joystick_is_held():
+    s, _ = new_session(restart_after_manual=True, fixed_areas=FIXED_AREA)
+    s.on_tracks(message([track(1, 1700)]))  # outside the area (pan ~15.7)
+    s.select_id(1)
+    s.set_tracking(True)
+    s.manual(-8, 0, 0)  # the operator holds the joystick in the app
+    s.on_tracks(message([track(1, 960)]))  # the target walks into the fixed area meanwhile
+    assert not s.link.gotos and s.link.requests[-1] == (-8, 0, 0)
+    s.tick(time.monotonic() + 0.4)  # released
+    s.on_tracks(message([track(1, 960)]))
+    assert s.state == ANGLE_FIXED and s.link.gotos == [(0.5, 3.0, 4000.0)]
+
+
+def test_fixed_area_waits_while_tracking_is_paused_for_a_manual_move():
+    s, _ = new_session(restart_after_manual=True, fixed_areas=FIXED_AREA)
+    s.on_tracks(message([track(1, 1700)]))
+    s.select_id(1)
+    s.set_tracking(True)
+    now = time.monotonic()
+    s.link.set_pose(0.0, 0.0, t=now - 1.0)
+    s.link.set_pose(2.0, 0.0, t=now - 0.05)  # someone else moves the camera
+    s.tick(now)
+    assert s.paused
+    s.on_tracks(message([track(1, 960)]))  # the target walks into the fixed area meanwhile
+    assert not s.link.gotos
+    s.link.set_pose(2.0, 0.0, t=now + 0.1)  # the camera stops
+    s.tick(now + 0.5)
+    s.tick(now + 1.6)
+    assert not s.paused and not s.link.gotos
+    s.on_tracks(message([track(1, 960)]))  # tracking again: now the area takes the shot
+    assert s.state == ANGLE_FIXED and s.link.gotos == [(0.5, 3.0, 4000.0)]
+
+
+def test_tracking_off_cancels_start_tracking_when_the_preset_is_reached():
+    s, _ = new_session()
+    s.cfg.preset_links[3] = PresetLink(auto_tracking="on", slot=0)
+    s.recall_preset(3)
+    assert s.move.then_track and not s.tracking
+    s.set_tracking(False)  # the operator (or Companion) says off during the move
+    s.move.started -= 1.0
+    s.tick(time.monotonic())
+    assert s.move is None and not s.tracking
+
+
+def test_tracking_off_and_operator_actions_drop_a_waiting_audio_cue():
+    s, _ = new_session()
+    s.audio_cue(1, "Pastor", None, "pastor", slow=False)
+    assert s.cue and s.tracking
+    s.set_tracking(False)
+    assert s.cue is None
+    s.set_tracking(True)
+    s.audio_cue(1, "Pastor", None, "pastor", slow=False)
+    s.on_tracks(message([track(1, 400), track(2, 1500)]))  # the pastor's face isn't recognised yet
+    assert s.select_at(1500 / W, 540 / H) == (2, "")  # the operator picks someone else
+    assert s.cue is None
+    s.on_tracks(message([face_track(1, 400, "pastor"), track(2, 1500)]))
+    assert s.target_id == 2  # the operator's pick stays
+
+
+def test_joystick_and_operator_moves_drop_a_waiting_audio_cue():
+    for act in (lambda s: s.manual(5, 0, 0), lambda s: s.recall_preset(4),
+                lambda s: s.go_to_manually(s.slot.initial, "manual position")):
+        s, _ = new_session(restart_after_manual=True)
+        s.audio_cue(1, "Pastor", None, "pastor", slow=False)
+        act(s)
+        assert s.cue is None
+
+
+def test_audio_cue_with_a_preset_still_starts_tracking_there():
+    s, _ = new_session()
+    s.audio_cue(1, "Pastor", 3, "", slow=False)
+    assert s.move.then_track and s.cue is not None and not s.tracking
+
+
+def test_preset_recall_and_other_controllers_count_as_moving_by_hand():
+    s, _ = new_session()
+    s.recall_preset(5)
+    assert s.manual_at > time.monotonic() - 1.0
+    s2, _ = new_session()  # tracking off, someone moves the camera with the vMix joystick
+    now = time.monotonic()
+    s2.link.set_pose(0.0, 0.0, t=now - 1.0)
+    s2.link.set_pose(2.0, 0.0, t=now - 0.05)
+    s2.tick(now)
+    assert s2.manual_at == now
+
+
+def test_identity_lock_keeps_the_target_face_when_its_track_shows_someone_else():
+    s, log = new_session()
+    s.on_tracks(message([face_track(1, 960, "pastor")]))
+    s.select_id(1)
+    s.set_tracking(True)
+    s.on_tracks(message([face_track(1, 960, "pastor")]))
+    assert s.target_face == "pastor"
+    # the tracker swapped the IDs: track 1 is now the singer, the pastor is track 5
+    s.on_tracks(message([face_track(1, 960, "singer"), face_track(5, 1500, "pastor", age=30.0)]))
+    assert s.target_id == 5 and s.target_face == "pastor" and not log.said("recognised: singer")
+    s2, log2 = new_session()
+    s2.on_tracks(message([face_track(1, 960, "pastor")]))
+    s2.select_id(1)
+    s2.on_tracks(message([face_track(1, 960, "pastor")]))
+    seen = s2.last_seen
+    s2.on_tracks(message([face_track(1, 960, "singer")]))  # nobody shows the pastor's face: hold
+    assert s2.target_face == "pastor" and s2.last_seen == seen and not log2.said("recognised: singer")
+
+
+def test_registered_faces_pick_the_next_face_when_the_target_track_shows_someone_else():
+    s, log = new_session(registered_faces=True)
+    s.cfg.faces = [FaceRef(id="pastor"), FaceRef(id="singer")]
+    s.set_tracking(True)
+    s.on_tracks(message([face_track(1, 960, "pastor")]))
+    s.on_tracks(message([face_track(1, 960, "pastor")]))
+    assert s.target_id == 1 and s.target_face == "pastor"
+    s.on_tracks(message([face_track(1, 960, "singer")]))  # the pastor left; the tracker gave the singer ID 1
+    s.last_seen -= 5.0
+    s.tick(time.monotonic())
+    assert s.state == LOST
+    s.on_tracks(message([face_track(1, 960, "singer")]))
+    s.on_tracks(message([face_track(1, 960, "singer")]))
+    assert log.said("registered face: singer") and s.target_face == "singer" and s.state == TRACKING
+
+
+def test_motion_starts_from_standstill_after_the_watchdog_stop():
+    s, _ = new_session()
+    s.on_tracks(message([track(7, 1700)]))
+    s.select_id(7)
+    s.set_tracking(True)
+    now = time.monotonic()
+    for i in range(25):  # half a second of panning right
+        s.on_tracks(message([track(7, 1700)]))
+        s.tick(now + 0.02 * i)
+    assert s.debug["velocity"][0] > 10
+    s.video_stopped()  # the vision worker died: the watchdog stops the camera
+    s.tick(now + 0.52)
+    s.video_resumed()
+    s.on_tracks(message([track(7, 1700)]))
+    s.tick(now + 0.6)
+    assert 0 < s.debug["velocity"][0] < 2  # ramps up again from 0
+
+
+def test_area_switched_on_while_the_position_is_unknown_is_left_as_it_was():
+    s, _ = new_session()
+    s.link.pose_now = lambda: None
+    rev = s.settings_rev
+    with pytest.raises(ValueError, match="position is not known"):
+        s.set_area("halting", 1, None, True)
+    assert not s.slot.halting_areas[1].enabled and s.settings_rev == rev
+
+
+def test_points_and_rectangles_must_be_finite():
+    s, _ = new_session()
+    s.on_tracks(message([track(1, 960)]))
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            s.select_at(bad, 0.5)
+        with pytest.raises(ValueError):
+            s.click_center(0.5, bad)
+        with pytest.raises(ValueError):
+            s.set_area("priority", 0, [0.2, bad, 0.6, 0.8], True)
+    assert s.target_id is None and not s.link.gotos and not s.slot.priority_area.enabled

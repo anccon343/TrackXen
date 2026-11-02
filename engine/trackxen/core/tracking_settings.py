@@ -8,16 +8,32 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from trackxen.control.controller import Framing
 from trackxen.control.lens import Lens
 
 SLOTS = 5
 AREAS = 4  # fixed viewing angle, exclusion and halting areas each
+# Composition limits (the pages offer narrower ones): outside them the camera would swing away from the
+# person, or the size control would fail (target_height 0, zoom_dead_band -1)
+COMPOSITION = {"anchor_x": (0.0, 1.0), "anchor_y": (0.0, 1.0), "dead_zone_x": (0.0, 0.5), "dead_zone_y": (0.0, 0.5),
+               "target_height": (0.05, 1.0), "zoom_dead_band": (0.0, 1.0)}
 
 
-class View(BaseModel):
+def bad_value(message: str, **values) -> PydanticCustomError:
+    """A ValueError for validators whose details can be sent back as JSON (a 422, not a 500)."""
+    return PydanticCustomError("value_error", message, values or None)
+
+
+class FiniteModel(BaseModel):
+    """Settings: numbers must be finite (NaN or infinity reaching the controller drives at full speed)."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+class View(FiniteModel):
     """A camera viewing angle: pan/tilt degrees and the raw zoom value."""
 
     set: bool = False
@@ -26,7 +42,7 @@ class View(BaseModel):
     zoom: float = 0.0
 
 
-class Area(BaseModel):
+class Area(FiniteModel):
     """A rectangle in room angles: pan left..right, tilt top..bottom (degrees).
 
     `view` is the camera angle the area was drawn at: "View" goes back to it, and for a fixed
@@ -51,7 +67,7 @@ class Area(BaseModel):
         return (self.left + self.right) / 2, (self.top + self.bottom) / 2
 
 
-class ShootingRange(BaseModel):
+class ShootingRange(FiniteModel):
     """Step 1: how far the camera may pan/tilt while tracking (the view edges stay inside)."""
 
     enabled: bool = False
@@ -61,7 +77,7 @@ class ShootingRange(BaseModel):
     bottom: float = -90.0
 
 
-class AutoSelect(BaseModel):
+class AutoSelect(FiniteModel):
     """Step 4: a person entering the area (or the whole view) becomes the target."""
 
     enabled: bool = False
@@ -69,27 +85,27 @@ class AutoSelect(BaseModel):
     area: Area = Field(default_factory=Area)
 
 
-class MultiPerson(BaseModel):
+class MultiPerson(FiniteModel):
     enabled: bool = False
     zoom_speed: int = Field(2, ge=1, le=3)
     min_size: int = Field(1, ge=0, le=3)  # higher: stop zooming out sooner
     transition_speed: int = Field(3, ge=1, le=3)  # lower: slower change between single and group
 
 
-class FaceDirection(BaseModel):
+class FaceDirection(FiniteModel):
     enabled: bool = False
     sensitivity: int = Field(2, ge=1, le=3)
     space: int = Field(2, ge=1, le=3)  # how much room to leave in the facing direction
     forward: Literal["maintain", "center"] = "maintain"
 
 
-class SitStand(BaseModel):
+class SitStand(FiniteModel):
     enabled: bool = False
     sit_size: float = Field(0.7, ge=0.2, le=0.95)  # person height in the frame when sitting
     stand_size: float = Field(0.5, ge=0.2, le=0.95)  # ... when standing
 
 
-class OnAir(BaseModel):
+class OnAir(FiniteModel):
     """Motion while the camera is on Program (vMix tally, or the manual on-air switch): calmer.
     Blended in and out over about a second, so the switch itself doesn't show."""
 
@@ -101,7 +117,7 @@ class OnAir(BaseModel):
     retarget: Literal["wait", "slow"] = "wait"  # a new target while live: wait until off Program, or go slowly
 
 
-class AutoFraming(BaseModel):
+class AutoFraming(FiniteModel):
     """Step 8."""
 
     enabled: bool = False
@@ -114,7 +130,7 @@ def _areas() -> list[Area]:
     return [Area() for _ in range(AREAS)]
 
 
-class AppSettings(BaseModel):
+class AppSettings(FiniteModel):
     """One of the 5 App Settings slots."""
 
     name: str = Field("", max_length=40)
@@ -148,6 +164,14 @@ class AppSettings(BaseModel):
     @classmethod
     def _four(cls, v: list[Area]) -> list[Area]:
         return (v + _areas())[:AREAS]
+
+    @field_validator("composition")
+    @classmethod
+    def _composition_in_range(cls, v: Framing) -> Framing:
+        for name, (lo, hi) in COMPOSITION.items():
+            if not lo <= getattr(v, name) <= hi:
+                raise bad_value("composition {name} must be {lo}..{hi}", name=name, lo=lo, hi=hi)
+        return v
 
     @model_validator(mode="after")
     def _sit_stand_sets_display_size(self) -> AppSettings:
@@ -200,6 +224,8 @@ def merge(data: dict, patch: dict) -> None:
 
     Lists of areas are patched by index: {"exclusion_areas": {"1": {"enabled": true}}}.
     """
+    if not isinstance(patch, dict):
+        raise ValueError("settings must be an object, e.g. {\"enabled\": true}")
     for key, value in patch.items():
         if key not in data:
             raise ValueError(f"unknown setting {key}")
@@ -217,7 +243,7 @@ def default_slots() -> list[AppSettings]:
     return [AppSettings(name=f"App Settings {i + 1}") for i in range(SLOTS)]
 
 
-class PresetLink(BaseModel):
+class PresetLink(FiniteModel):
     """Step 10: what tracking does after a camera preset is recalled."""
 
     auto_tracking: Literal["", "on", "off"] = ""  # "" = follow "restart after manual operation"
