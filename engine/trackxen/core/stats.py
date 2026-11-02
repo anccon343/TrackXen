@@ -351,6 +351,7 @@ class StatsCollector:
         self.on_sample, self.interval = on_sample, interval
         self.latest: dict = {}
         self.problems: list[Problem] = []
+        self.extra_problems: Callable[[], list[Problem]] | None = None  # e.g. the app's camera and vMix connections
         self._active: set[tuple[str, str]] = set()
         self._present: dict[tuple[str, str], int] = {}  # consecutive samples with the problem
         self._absent: dict[tuple[str, str], int] = {}  # consecutive samples without an active problem
@@ -367,6 +368,8 @@ class StatsCollector:
         found = check_problems(sample, self.limits)
         if self.log.failing:
             found.append(Problem("warning", "pc", f"log files can't be written: {self.log.failing}", "log files"))
+        if self.extra_problems:  # (the app's connection lights: cameras, FreeD, vMix, mixer)
+            found += self.extra_problems()
         problems = self._settle(found)
         self.latest, self.problems = sample, problems
         self.log.sample(sample)
