@@ -91,6 +91,7 @@ class CameraState:
     target_face: str | None = None  # registered face of its current target
     manual_at: float = -1e9  # last time the operator moved or picked on it
     busy_with: int | None = None  # the mic channel it is answering
+    framing_mic: int | None = None  # the mic whose person it found and still follows (an answered cue)
 
 
 @dataclass
@@ -112,13 +113,15 @@ class AudioFollow:
         if mapping is None:
             return None
         able = [c for c in cameras if c.follow and self._may_answer(mapping, c.id)]
-        if any(c.target_face and mapping.face and c.target_face == mapping.face and c.tracking for c in able):
+        if any(c.tracking and (c.framing_mic == channel or (c.target_face and mapping.face
+                                                            and c.target_face == mapping.face)) for c in able):
             self.waiting.pop(channel, None)
             return None  # a camera is already on that person
         free = [c for c in able if now - c.manual_at >= cfg.manual_grace]
         off_air = [c for c in free if not c.on_air]
-        if off_air:  # prefer the one not answering another mic, then the order of the camera list
-            pick = min(off_air, key=lambda c: (c.busy_with is not None, cameras.index(c)))
+        if off_air:  # prefer one not answering or framing another mic, then the order of the camera list
+            pick = min(off_air, key=lambda c: (c.busy_with is not None or (c.tracking and c.framing_mic is not None),
+                                               cameras.index(c)))
             self.waiting.pop(channel, None)
             return Cue(pick.id, mapping, reason="off air")
         if free and cfg.live_camera == "slow":

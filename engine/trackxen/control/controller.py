@@ -6,7 +6,8 @@ Per update:
 2. Predict that direction `lookahead` seconds ahead (video and command delays).
 3. The camera should point so the head sits at the framing point (Canon's Display Position).
 4. Inside the dead zone (Canon's Pan/Tilt Halting Area) the camera stays still; once it
-   moves, it keeps going until the error is small again (no stop-start jitter).
+   moves, it keeps going until the error is small again (no stop-start jitter), at least at
+   the camera's slowest speed step.
 5. Speed = the person's own speed (feed-forward) + gain x error, limited by the motion
    profile's top speed and acceleration, then mapped to the camera's real speed steps.
 6. Auto zoom keeps the person at the wanted size (Canon's Display Size).
@@ -91,6 +92,7 @@ class Observation:
     want_hfov: float | None = None  # zoom to this field of view (a group)...
     target_height: float | None = None  # ...or bring the person to this height share (Sit/Stand)
     zoom_step: int | None = None  # top zoom speed step for this framing
+    cut_bottom: bool = False  # the person's box ends at the picture's bottom edge (bigger than `height` says)
 
 
 @dataclass
@@ -178,11 +180,15 @@ class Controller:
             feedforward = 0.0 if held[axis] else m.feedforward * target_speed[axis]
             wanted = feedforward + m.gain * err if self._moving[axis] else 0.0
             wanted = max(-limits[axis], min(limits[axis], wanted))
-            if dt > 0:  # acceleration limit: smooth starts and stops
-                step = m.max_accel * dt
-                wanted = max(self._velocity[axis] - step, min(self._velocity[axis] + step, wanted))
+            step = m.max_accel * dt  # acceleration limit: smooth starts and stops (no time passed: no change)
+            wanted = max(self._velocity[axis] - step, min(self._velocity[axis] + step, wanted))
             self._velocity[axis] = wanted
             steps[axis] = SpeedTable.step_for(table, wanted)
+            if self._moving[axis] and steps[axis] == 0:  # slower than the camera's slowest step
+                if abs(err) <= dead[axis]:
+                    self._moving[axis] = False  # inside the dead zone: settle here, it would get no closer
+                else:  # outside it: the slowest step, or the camera would never get there
+                    steps[axis] = 1 if (wanted if wanted else err) > 0 else -1
 
         zoom = self._zoom(obs, pose, tt, vfov)
         return Command(steps[0], steps[1], zoom, debug={
@@ -209,13 +215,19 @@ class Controller:
         top = m.max_zoom_step if obs.zoom_step is None else min(obs.zoom_step, m.max_zoom_step)
         if any(self._moving) or top <= 0:  # (0: no zooming, e.g. while on air)
             return 0
+        if obs.cut_bottom and not obs.want_hfov and ratio > 1:
+            # the picture's bottom edge cuts the person off: bigger than the box says, and zooming in only
+            # cuts more off (it would never get there). Taken as reached.
+            self._sizing = False
+            return 0
         size = min(top, max(1, round(abs(math.log(ratio)) * 6)))
         zoom = size if ratio > 1 else -size
         limit = self.lens.zoom_max * 0.99 if self.max_zoom is None else min(self.max_zoom, self.lens.zoom_max * 0.99)
-        if zoom > 0 and (pose.zoom >= limit or (self.fix_tilt and abs(head_tilt - pose.tilt) > 0.35 * vfov)):
-            return 0  # at the limit, or (tilt fixed) zooming in would push the person out of the picture
-        if zoom < 0 and pose.zoom <= 1:
+        if (zoom > 0 and pose.zoom >= limit) or (zoom < 0 and pose.zoom <= 1):
+            self._sizing = False  # as far as the zoom goes: the one-time display size is done
             return 0
+        if zoom > 0 and self.fix_tilt and abs(head_tilt - pose.tilt) > 0.35 * vfov:
+            return 0  # (tilt fixed) zooming in would push the person out of the picture
         return zoom
 
 
@@ -226,3 +238,9 @@ def head_point(box: list[float], keypoints: list[list[float]], min_conf: float =
         return sum(p[0] for p in face) / len(face), sum(p[1] for p in face) / len(face)
     x1, y1, x2, y2 = box
     return (x1 + x2) / 2, y1 + 0.1 * (y2 - y1)
+
+
+def cut_at_bottom(box: list[float], frame_height: float) -> bool:
+    """Does the person's box reach the picture's bottom edge? Then the person goes on below it, and the box
+    (only what is visible) is shorter than the person."""
+    return box[3] >= frame_height * 0.99

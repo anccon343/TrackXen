@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass, field
 
 from trackxen.control.camera import Pose
-from trackxen.control.controller import head_point
+from trackxen.control.controller import cut_at_bottom, head_point
 from trackxen.control.lens import Lens
 from trackxen.core.tracking_settings import AppSettings
 from trackxen.rules.areas import Placed
@@ -138,13 +138,19 @@ class Framer:
             self.members, self.candidates, self.failing = {}, {}, {}
             group, self.blend = [], 0.0
 
+        cut = cut_at_bottom(main.track["box"], msg["height"])
         if self.blend <= 0.0:  # one person: the normal composition
             want = None
-            if self.home_hfov is not None and not (comp.display_size or target_height):
-                if abs(math.log(lens.hfov(pose.zoom) / self.home_hfov)) < math.log(1.08):
-                    self.home_hfov = None  # back at the view from before the group
+            if self.home_hfov is not None:  # a group just ended: back to the single composition's view
+                # (Sit/Stand and Auto Zoom keep the size themselves; else the display size once, or the view
+                # from before the group)
+                back = (None if target_height or (comp.display_size and comp.auto_zoom)
+                        else min(lens.hfov_wide, max(lens.hfov_tele, self._single_hfov(comp, None, main, pose, lens, cut))))
+                if back is None or (abs(math.log(lens.hfov(pose.zoom) / back))
+                                    <= math.log(1 + comp.zoom_dead_band) + 1e-6):  # where the controller stops
+                    self.home_hfov = None
                 else:
-                    want = self.home_hfov
+                    want = back
             return Shot(hx, hy, (anchor_x, anchor_y), want_hfov=want, target_height=target_height,
                         facing=facing, posture=posture)
 
@@ -153,7 +159,7 @@ class Framer:
             self.home_hfov = lens.hfov(pose.zoom)
         if group:
             self.group_view = self._view_of([main, *group])
-        single_hfov = self._single_hfov(comp, target_height, main, pose, lens)
+        single_hfov = self._single_hfov(comp, target_height, main, pose, lens, cut)
         g_pan, g_tilt, g_hfov = self.group_view or (main.pan, main.tilt, single_hfov)
         b = self.blend
         offset = ((g_pan - main.pan) * b, (g_tilt - main.tilt) * b)
@@ -219,11 +225,15 @@ class Framer:
         left, right = min(p.left for p in group), max(p.right for p in group)
         return (left + right) / 2, sum(p.tilt for p in group) / len(group), (right - left) * GROUP_MARGIN
 
-    def _single_hfov(self, comp, target_height: float | None, main: Placed, pose: Pose, lens: Lens) -> float:
-        """The view the single composition wants: the display size, or the view from before the group."""
+    def _single_hfov(self, comp, target_height: float | None, main: Placed, pose: Pose, lens: Lens,
+                     cut: bool = False) -> float:
+        """The view the single composition wants: the display size, or the view from before the group.
+        With the main person cut off by the picture's bottom edge (bigger than the box), never narrower
+        than the view now."""
         size = target_height or (comp.target_height if comp.display_size else None)
         if size and main.height > 0:
-            return lens.hfov_for_vfov(main.height / size)
+            hfov = lens.hfov_for_vfov(main.height / size)
+            return max(hfov, lens.hfov(pose.zoom)) if cut else hfov
         return self.home_hfov or lens.hfov(pose.zoom)
 
     # --- Face Direction ----------------------------------------------------------------

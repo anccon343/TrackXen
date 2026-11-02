@@ -4,7 +4,8 @@ from collections import deque
 import pytest
 
 from trackxen.control.camera import Pose
-from trackxen.control.controller import Controller, Framing, Motion, Observation, SpeedTable, head_point
+from trackxen.control.controller import (Controller, Framing, Motion, Observation, SpeedTable, cut_at_bottom,
+                                         head_point)
 from trackxen.control.kalman import AngleKalman
 from trackxen.control.lens import Lens
 
@@ -45,9 +46,9 @@ def test_kalman_estimates_speed():
 
 
 def simulate(target, seconds=12.0, video_delay=0.08, command_delay=0.03, framing=None, motion=None,
-             start_zoom_hfov=30.0, person_deg=7.0, setup=None):
+             start_zoom_hfov=30.0, person_deg=7.0, setup=None, lens=None, speeds=None):
     """Closed loop: simulated camera (speed table, delays) + controller following `target(t)`."""
-    lens, speeds = Lens(), SpeedTable()
+    lens, speeds = lens or Lens(), speeds or SpeedTable()
     ctrl = Controller(lens, speeds, framing or Framing(), motion or Motion())
     if setup:
         setup(ctrl)
@@ -153,3 +154,147 @@ def test_constrained_aim_stops_at_the_limit():
                                               setup=lambda c: setattr(c, "constrain", limit))
     assert pan == pytest.approx(5.0, abs=1.0)
     assert all(c[1] == 0 for c in commands[-100:])  # parked at the limit, not pushing past it
+
+
+# --- PTZOptics G2: speed step 1 is 1.7 deg/s, so slow wishes round to "no movement" --------------------
+
+def ptz_lens_speeds() -> tuple[Lens, SpeedTable]:
+    from trackxen.core.camera_models import MODELS
+
+    m = MODELS["ptzoptics_g2"]
+    return Lens(m["lens"]["hfov_wide"], m["lens"]["hfov_tele"], m["lens"]["zoom_max"]), SpeedTable(m["pan_speeds"],
+                                                                                                    m["tilt_speeds"])
+
+
+def ptz_controller(hfov: float, motion: Motion | None = None, framing: Framing | None = None):
+    lens, speeds = ptz_lens_speeds()
+    ctrl = Controller(lens, speeds, framing or Framing(), motion or Motion())
+    zoom = lens.zoom_max if hfov <= lens.hfov_tele else lens.zoom_for_hfov(hfov)
+    return ctrl, Pose(0.0, 0.0, 0.0, zoom)
+
+
+def run_still(ctrl: Controller, pose: Pose, tilt_error: float, ticks: int = 100, height: float = 0.55 * H) -> list:
+    """A still person whose head is `tilt_error` degrees above the framing point; the commands for it."""
+    f = ctrl.framing
+    off_pan, off_tilt = ctrl.lens.pixel_to_angles(f.anchor_x * W, f.anchor_y * H, W, H, pose.zoom)
+    x, y = ctrl.lens.angles_to_pixel(off_pan, off_tilt + tilt_error, W, H, pose.zoom)
+    cmds = []
+    for i in range(ticks):
+        t = i * 0.02
+        ctrl.observe(Observation(t, x, y, height, W, H), Pose(t, pose.pan, pose.tilt, pose.zoom))
+        cmds.append(ctrl.command(t, Pose(t, pose.pan, pose.tilt, pose.zoom)))
+    return cmds
+
+
+def test_a_correction_slower_than_step_1_still_moves_the_camera():
+    """N14: tilt error outside the dead zone (0.36 deg at 8 deg wide) but so small that gain x error is below
+    half of step 1: the camera must still be moved (slowest step), not left "moving" at step 0 forever."""
+    ctrl, pose = ptz_controller(8.0)
+    cmds = run_still(ctrl, pose, 0.45)
+    assert cmds[-1].tilt == 1 and all(c.pan == 0 for c in cmds)
+    ctrl, pose = ptz_controller(8.0)
+    assert run_still(ctrl, pose, -0.45)[-1].tilt == -1
+
+
+def test_a_small_error_inside_the_dead_zone_ends_the_movement_and_lets_it_zoom():
+    """N14: moving, the error is inside the dead zone but above the settle threshold, and the speed rounds to
+    step 0: the axis settles (it would never get closer), so Display Size / Auto Zoom can zoom."""
+    ctrl, pose = ptz_controller(20.0, framing=Framing(display_size=True, auto_zoom=True, target_height=0.55))
+    ctrl._moving = [False, True]  # (after a correction)
+    cmds = run_still(ctrl, pose, 0.3, ticks=20, height=0.25 * H)  # dead zone 0.9 deg, settled below 0.27
+    assert not ctrl._moving[1] and all(c.tilt == 0 for c in cmds) and cmds[-1].zoom > 0
+
+
+def test_on_air_speed_limit_below_step_1_still_corrects_tilt():
+    """K53: at full tele with the on-air speed (0.5), the tilt limit is below half of step 1 (0.85 deg/s)."""
+    ctrl, pose = ptz_controller(3.36, motion=Motion(max_pan=15.0, max_tilt=7.5))
+    cmds = run_still(ctrl, pose, -0.756)  # the head at 0.7 of the picture height
+    assert cmds[-1].tilt == -1  # down, at the slowest step
+
+
+def test_closed_loop_ptzoptics_tight_shot_settles_and_zooms():
+    """N14 in a closed loop with camera latency: the tilt settles inside the dead zone and auto zoom works."""
+    lens, speeds = ptz_lens_speeds()
+    framing = Framing(display_size=True, auto_zoom=True, target_height=0.6)
+    errors, commands, _, _ = simulate(lambda t: (0.5, 0.3), seconds=10, framing=framing, start_zoom_hfov=8.0,
+                                      person_deg=1.5, command_delay=0.1, video_delay=0.1, lens=lens, speeds=speeds)
+    assert any(c[3] > 0 for c in commands)  # zoomed in towards the display size
+    _, ex, ey = errors[-1]
+    assert abs(ex) < framing.dead_zone_x * W and abs(ey) < framing.dead_zone_y * H
+
+
+def test_two_commands_at_the_same_moment_keep_the_acceleration_limit():
+    """K56: dt == 0 means no time passed, so the speed may not change (not: any change allowed)."""
+    ctrl = Controller()
+    pose = Pose(0.0, 0.0, 0.0, ctrl.lens.zoom_for_hfov(40.0))
+    x, y = ctrl.lens.angles_to_pixel(10.0, 0.0, W, H, pose.zoom)
+    ctrl.observe(Observation(0.0, x, y, 400, W, H), pose)
+    ctrl.command(0.0, pose)
+    first = ctrl._velocity[0]
+    assert 0 < first <= Motion().max_accel * 0.02 + 1e-9
+    ctrl.command(0.0, pose)
+    assert ctrl._velocity[0] == pytest.approx(first)
+
+
+def test_display_size_at_the_zoom_limit_counts_as_done():
+    """N12: the one-time Display Size zoom stopped by the zoom limit is over; it does not keep adjusting
+    later like Auto Zoom."""
+    ctrl = Controller(framing=Framing(display_size=True, auto_zoom=False, target_height=0.6))
+    tele, mid, wide = (Pose(0.0, 0.0, 0.0, z) for z in (ctrl.lens.zoom_max, ctrl.lens.zoom_max / 2, 0.0))
+    assert ctrl._zoom(Observation(0.0, W / 2, H / 2, 0.2 * H, W, H), tele, 0.0, 2.0) == 0  # too small, can't zoom in
+    assert not ctrl._sizing
+    assert ctrl._zoom(Observation(1.0, W / 2, H / 2, 0.95 * H, W, H), mid, 0.0, 10.0) == 0  # (walked up close)
+    ctrl.reset()
+    assert ctrl._zoom(Observation(0.0, W / 2, H / 2, 0.95 * H, W, H), wide, 0.0, 30.0) == 0 and not ctrl._sizing
+    ctrl.framing.auto_zoom = True  # Auto Zoom keeps adjusting
+    assert ctrl._zoom(Observation(1.0, W / 2, H / 2, 0.95 * H, W, H), mid, 0.0, 10.0) < 0
+
+
+def test_a_person_cut_off_by_the_bottom_of_the_picture_is_not_zoomed_into():
+    """N15: the box ends at the picture's bottom edge, so the person is bigger than it shows; zooming in would
+    only cut more off (and never reach the size). Zooming out still works."""
+    ctrl = Controller(framing=Framing(display_size=True, auto_zoom=True, target_height=0.9))
+    pose = Pose(0.0, 0.0, 0.0, ctrl.lens.zoom_max / 2)
+    cut = Observation(0.0, W / 2, 0.3 * H, 0.72 * H, W, H, cut_bottom=True)
+    assert ctrl._zoom(cut, pose, 0.0, 10.0) == 0
+    assert ctrl._zoom(Observation(0.0, W / 2, 0.3 * H, 0.72 * H, W, H), pose, 0.0, 10.0) > 0  # whole person: zoom in
+    sit = Observation(0.0, W / 2, 0.3 * H, 0.72 * H, W, H, target_height=0.95, cut_bottom=True)
+    assert ctrl._zoom(sit, pose, 0.0, 10.0) == 0
+    small = Controller(framing=Framing(display_size=True, auto_zoom=True, target_height=0.3))
+    assert small._zoom(cut, pose, 0.0, 10.0) < 0  # too big: zooms out
+
+
+def test_cut_at_bottom():
+    assert cut_at_bottom([100, 300, 200, 1079], 1080) and cut_at_bottom([100, 300, 200, 1085], 1080)
+    assert not cut_at_bottom([100, 300, 200, 1000], 1080)
+
+
+def test_session_tells_the_controller_when_the_box_is_cut_at_the_bottom():
+    """N15: the session passes it on with each sighting."""
+    import time
+
+    from trackxen.core.config import CameraConfig
+    from trackxen.core.session import CameraSession
+
+    class Link:
+        visca_ok, freed_age, commanding, last_motion = True, 0.01, False, 0.0
+
+        def pose_at(self, t):
+            return Pose(t, 0.0, 0.0, 2266.0)
+
+        def pose_now(self):
+            return Pose(time.monotonic(), 0.0, 0.0, 2266.0)
+
+        def request(self, pan, tilt, zoom=0):
+            pass
+
+    s = CameraSession(CameraConfig(id="cam1", video_delay=0.0), Link())
+    s.set_tracking(True)
+    s.select_id(1)
+    for bottom, cut in ((900, False), (1080, True)):
+        now = time.monotonic()
+        kp = [[960, 330, 0.9]] + [[0, 0, 0]] * 16
+        s.on_tracks({"t_frame": now, "t_done": now, "width": W, "height": H, "timing": {}, "tracks": [
+            {"id": 1, "box": [900, 300, 1020, bottom], "score": 0.9, "keypoints": kp, "velocity": [0, 0],
+             "missed": 0, "age": 5.0}]})
+        assert s.controller.last_obs.cut_bottom is cut

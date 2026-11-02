@@ -185,9 +185,9 @@ async def cmd_calibrate(client: visca.ViscaClient, args) -> None:
     await client.command(visca.pan_tilt_absolute(home[0], home[1], s, t))
     pan_units, tilt_units = abs(right - left) / args.pan_range, abs(up - down) / args.tilt_range
     print(f"pan ends {left} .. {right} over {args.pan_range:g} deg: {pan_units:.3f} units per degree"
-          f"{' (right is negative: pan_sign -1)' if right < left else ''}")
+          f"{' (right is negative: the positions count against the drive, which pan_sign cannot fix)' if right < left else ''}")
     print(f"tilt ends {down} .. {up} over {args.tilt_range:g} deg: {tilt_units:.3f} units per degree"
-          f"{' (up is negative: tilt_sign -1)' if up < down else ''}")
+          f"{' (up is negative: the positions count against the drive, which tilt_sign cannot fix)' if up < down else ''}")
     print(f"Settings -> Cameras: units_per_degree {pan_units:.3f}, tilt_units_per_degree {tilt_units:.3f}")
     path = results_path("calibrate")
     write_csv(path, ["pan_left", "pan_right", "pan_range_deg", "pan_units_per_deg", "tilt_down", "tilt_up",

@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+from trackxen.control.camera import Pose
 from trackxen.integrations import vmix, xair
 from trackxen.rules.audio import AudioFollow, AudioFollowConfig, CameraState, MicMapping, SpeechDetector
 from trackxen.sim.fake_mixer import FakeMixer
@@ -64,6 +65,64 @@ def test_no_move_when_a_camera_already_has_that_person():
     c = cfg(mappings=[mapping(face="pastor")])
     cams = [CameraState("cam1", tracking=True, target_face="pastor"), CameraState("cam2")]
     assert AudioFollow().choose(1, c, cams, 100.0) is None
+
+
+def test_a_camera_framing_a_mics_person_stays_busy_after_the_cue_is_answered():
+    """K59: once a camera found the person at mic 1 (no registered face), mic 1 speaking again leaves it
+    alone, and mic 2 goes to a camera that isn't framing anybody's mic."""
+    c = cfg(mappings=[mapping(), mapping(channel=2, label="Reader", presets={"cam1": 5, "cam2": 6})])
+    cams = [CameraState("cam1", tracking=True, framing_mic=1), CameraState("cam2")]
+    follow = AudioFollow()
+    follow.waiting[1] = 90.0
+    assert follow.choose(1, c, cams, 100.0) is None and 1 not in follow.waiting
+    assert follow.choose(2, c, cams, 100.0).camera == "cam2"
+    cams[0].tracking = False  # (no longer following anybody)
+    assert follow.choose(1, c, cams, 100.0).camera == "cam1"
+
+
+def test_a_session_remembers_whose_mic_it_answered_until_the_target_changes():
+    """K59: the session keeps the answered mic while it follows that person; audio-follow sees it."""
+    from trackxen.core.config import AppConfig, CameraConfig
+    from trackxen.core.live_inputs import LiveInputs
+    from trackxen.core.session import CameraSession
+
+    class Link:
+        visca_ok, freed_age, commanding, last_motion = True, 0.01, False, 0.0
+
+        def pose_at(self, t):
+            return Pose(t, 0.0, 0.0, 2266.0)
+
+        def pose_now(self):
+            return Pose(time.monotonic(), 0.0, 0.0, 2266.0)
+
+        def request(self, pan, tilt, zoom=0):
+            pass
+
+    def tracks(*ids):
+        now = time.monotonic()
+        return {"t_frame": now, "t_done": now, "width": 1920, "height": 1080, "timing": {}, "tracks": [
+            {"id": i, "box": [900 + 200 * n, 300, 1020 + 200 * n, 900], "score": 0.9,
+             "keypoints": [[960 + 200 * n, 330, 0.9]] + [[0, 0, 0]] * 16, "velocity": [0, 0], "missed": 0, "age": 5.0}
+            for n, i in enumerate(ids)]}
+
+    s = CameraSession(CameraConfig(id="cam1", video_delay=0.0), Link())
+    s.audio_cue(1, "Pastor", None, "", slow=False)  # no preset: take the person in view
+    assert s.tracking and s.cue
+    s.on_tracks(tracks(4))
+    assert s.cue is None and s.target_id == 4 and s.framing_mic == 1
+
+    class App:
+        config, sessions = AppConfig(), {"cam1": s}
+
+    states = LiveInputs(App())._camera_states()
+    assert states[0].framing_mic == 1 and states[0].busy_with is None
+    s.lost_since = time.monotonic()  # lost: the mic speaking again may send it to its place again
+    assert LiveInputs(App())._camera_states()[0].framing_mic is None
+    s.lost_since = None
+    s.on_tracks(tracks(9, 4))  # the target is still followed (and the tracker renumbering keeps it)
+    assert s.framing_mic == 1
+    s.select_at(0.5, 0.5)  # the operator picks someone else
+    assert s.target_id == 9 and s.framing_mic is None
 
 
 def test_vmix_link_follows_tally_and_matches_ndi_names():

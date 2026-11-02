@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from trackxen.control.camera import Pose
@@ -157,3 +159,94 @@ def test_nobody_joins_while_the_target_is_at_the_edge_of_the_picture():
     main = person(1, 18.5)  # 40-degree view centred at 0: the target is near the right edge
     shot, _ = run(Framer(), s, main, [main, person(2, 15.0)], 2.0)
     assert shot.group == []
+
+
+def at_hfov(hfov: float) -> Pose:
+    return Pose(0.0, 0.0, 0.0, LENS.zoom_for_hfov(hfov))
+
+
+def test_the_return_after_a_group_ends_where_the_controller_stops_zooming():
+    """N16: the controller stops zooming within its zoom dead band (15 %); the way back to the view from
+    before the group must count as done there, or it keeps pulling the zoom (and undoes a hand zoom)."""
+    s = slot(auto_framing={"enabled": True, "multi_person": {"enabled": True, "transition_speed": 3}})
+    framer, main = Framer(), person(1, 0.0)
+    shot, t = run(framer, s, main, [main, person(2, 4.0)], 2.0)
+    assert shot.group == [2] and framer.home_hfov == pytest.approx(40.0)
+    shot, t = run(framer, s, main, [main], 2.0, t, pose=at_hfov(45.0))  # the controller stopped 12 % short
+    assert framer.blend == 0.0 and shot.want_hfov is None and framer.home_hfov is None
+    shot, t = run(framer, s, main, [main], 0.5, t, pose=at_hfov(20.0))  # the operator zooms in by hand
+    assert shot.want_hfov is None  # left alone
+
+
+def test_display_size_without_auto_zoom_returns_to_the_display_size_after_a_group():
+    """N17: with Display Size (one-time, no Auto Zoom) the single composition after a group is the display
+    size again; nothing else would zoom back from the group's width."""
+    s = slot(composition={"display_size": True, "auto_zoom": False, "target_height": 0.55},
+             auto_framing={"enabled": True, "multi_person": {"enabled": True, "transition_speed": 3}})
+    framer, main = Framer(), person(1, 0.0)
+    shot, t = run(framer, s, main, [main, person(2, 20.0)], 2.0)
+    assert shot.group == [2]
+    sized = LENS.hfov_for_vfov(7.0 / 0.55)
+    shot, t = run(framer, s, main, [main], 2.0, t, pose=at_hfov(26.0))  # the camera is at the group's width
+    assert framer.blend == 0.0 and shot.want_hfov == pytest.approx(sized)
+    shot, t = run(framer, s, main, [main], 0.1, t, pose=at_hfov(sized * 1.05))  # there (within the dead band)
+    assert shot.want_hfov is None and framer.home_hfov is None
+    shot, t = run(framer, s, main, [main], 0.5, t, pose=at_hfov(26.0))  # later zoomed by hand: left alone
+    assert shot.want_hfov is None
+
+
+def test_the_return_after_a_group_ends_at_the_wide_end_when_the_size_needs_more():
+    s = slot(composition={"display_size": True, "auto_zoom": False, "target_height": 0.2},
+             auto_framing={"enabled": True, "multi_person": {"enabled": True, "transition_speed": 3}})
+    framer, main = Framer(), person(1, 0.0, height=20.0)  # the display size would need a 70-degree view
+    shot, t = run(framer, s, main, [main, person(2, 4.0)], 2.0)
+    assert shot.group == [2]
+    shot, t = run(framer, s, main, [main], 2.0, t, pose=Pose(0.0, 0.0, 0.0, 0.0))  # zoomed all the way out
+    assert shot.want_hfov is None and framer.home_hfov is None  # as far as it goes: done
+
+
+def test_auto_zoom_handles_the_return_itself():
+    s = slot(composition={"display_size": True, "auto_zoom": True, "target_height": 0.55},
+             auto_framing={"enabled": True, "multi_person": {"enabled": True, "transition_speed": 3}})
+    framer, main = Framer(), person(1, 0.0)
+    shot, t = run(framer, s, main, [main, person(2, 20.0)], 2.0)
+    shot, t = run(framer, s, main, [main], 2.0, t, pose=at_hfov(26.0))
+    assert framer.blend == 0.0 and shot.want_hfov is None and framer.home_hfov is None
+
+
+def test_hfov_for_a_view_taller_than_180_degrees_stays_positive():
+    """K58: tan() wraps above 180 degrees; the widest possible view is the answer instead."""
+    for vfov in (179.0, 182.0, 200.0, 400.0):
+        assert 170.0 < LENS.hfov_for_vfov(vfov) < 180.0
+    assert LENS.hfov_for_vfov(36.0) == pytest.approx(math.degrees(2 * math.atan(math.tan(math.radians(18)) * 16 / 9)))
+
+
+def test_a_very_big_main_person_still_forms_a_group_and_never_crashes():
+    """K58: a main person taller than the minimum share of 180 degrees (an extreme close-up at the wide
+    end) must not make the group's widest view negative, nor the single view's log() fail."""
+    wide = slot(auto_framing={"enabled": True, "multi_person": {"enabled": True, "min_size": 0}})
+    main = person(1, 0.0, height=30.0)
+    shot, _ = run(Framer(), wide, main, [main, person(2, 3.0)], 2.0)
+    assert shot.group == [2]
+    sitting = kp(nose=(960, 500), l_shoulder=(960, 560), l_hip=(960, 760), l_knee=(1060, 790))
+    s = slot(auto_framing={"enabled": True, "multi_person": {"enabled": True, "transition_speed": 3},
+                           "sit_stand": {"enabled": True, "sit_size": 0.2}})
+    main = person(1, 0.0, height=37.0, keypoints=sitting)
+    shot, _ = run(Framer(), s, main, [main, person(2, 3.0)], 2.0)
+    assert shot.group == [2] and shot.want_hfov > 0
+
+
+def test_a_main_person_cut_off_at_the_bottom_does_not_narrow_the_single_view():
+    """N15: the box ends at the picture's bottom edge (the person goes on below it): sizing from it would
+    zoom in far past the display size, so the single view is never narrower than the view now."""
+    s = slot(composition={"display_size": True, "auto_zoom": False, "target_height": 0.9},
+             auto_framing={"enabled": True, "multi_person": {"enabled": True, "transition_speed": 3}})
+    framer, main = Framer(), person(1, 0.0, height=10.0)
+    sized = LENS.hfov_for_vfov(10.0 / 0.9)
+    assert framer._single_hfov(s.composition, None, main, POSE, LENS) == pytest.approx(sized)
+    assert framer._single_hfov(s.composition, None, main, POSE, LENS, cut=True) == pytest.approx(40.0)
+    main.track["box"][3] = H  # cut off by the bottom of the picture
+    shot, t = run(framer, s, main, [main, person(2, 20.0)], 2.0)
+    assert shot.group == [2]
+    shot, t = run(framer, s, main, [main], 2.0, t)
+    assert framer.blend == 0.0 and shot.want_hfov is None  # stays at the view it has (40), no zooming in
