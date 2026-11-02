@@ -17,6 +17,7 @@ so callers pass the destination to `sendto` and filter replies by sender address
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import socket
 import sys
 
@@ -64,3 +65,12 @@ async def open_udp(protocol_factory, local: tuple[str, int] = ("0.0.0.0", 0), br
 def resolve(host: str) -> str:
     """IPv4 address of a host name (replies are matched against it)."""
     return socket.gethostbyname(host)
+
+
+async def resolve_async(host: str) -> str:
+    """resolve() without blocking the event loop: a name that resolves slowly (or not at all) froze every
+    camera loop and the UI for the resolver's timeout. An IPv4 address, the usual case, needs no lookup."""
+    try:
+        return str(ipaddress.IPv4Address(host))
+    except ValueError:
+        return await asyncio.to_thread(resolve, host)

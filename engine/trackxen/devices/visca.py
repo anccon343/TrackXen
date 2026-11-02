@@ -167,18 +167,24 @@ def inq_focus_position() -> bytes:
     return bytes([0x81, 0x09, 0x04, 0x48, 0xFF])
 
 
+def _nibbles(data: bytes, count: int, what: str) -> bytes:
+    """`data` if it is exactly `count` nibbles. Replies are matched by socket only, so one of another length
+    answers another question (a late pan/tilt reply taken for the zoom one) or uses a layout we don't read
+    (5 pan nibbles on newer Sony cameras): decoding it anyway gave wrong positions without an error."""
+    if len(data) != count or any(b > 0x0F for b in data):
+        raise ValueError(f"{what} reply is not {count} nibbles: {data.hex()}")
+    return data
+
+
 def decode_pan_tilt(data: bytes) -> tuple[int, int]:
     """Pan and tilt from a pan/tilt position reply (8 nibbles, signed)."""
-    if len(data) < 8:
-        raise ValueError(f"pan/tilt reply too short: {data.hex()}")
+    data = _nibbles(data, 8, "pan/tilt")
     return from_nibbles(data[0:4]), from_nibbles(data[4:8])
 
 
 def decode_position(data: bytes) -> int:
     """Zoom or focus position from a 4-nibble reply (unsigned)."""
-    if len(data) < 4:
-        raise ValueError(f"position reply too short: {data.hex()}")
-    return from_nibbles(data[0:4], signed=False)
+    return from_nibbles(_nibbles(data, 4, "position"), signed=False)
 
 
 # --- Replies --------------------------------------------------------------
@@ -275,16 +281,22 @@ class ViscaClient:
         self._lock = asyncio.Lock()
         self._seq = 0
         self.last_error: Exception | None = None
+        self._closed = False  # close() was called, perhaps while connect() was still waiting
 
     async def connect(self) -> None:
-        from trackxen.devices.udp import open_udp, resolve
+        from trackxen.devices.udp import open_udp, resolve_async
 
-        self._remote = (resolve(self.host), self.port)
-        self._transport, _ = await open_udp(lambda: _Protocol(self))
+        self._remote = (await resolve_async(self.host), self.port)
+        transport, _ = await open_udp(lambda: _Protocol(self))
+        if self._closed:  # closed while connecting: don't leave a socket open that nobody will close
+            transport.close()
+            raise ConnectionError(f"{self.host}:{self.port}: closed while connecting")
+        self._transport = transport
         if self.use_header:
             await self.reset_sequence()
 
     def close(self) -> None:
+        self._closed = True
         if self._transport:
             self._transport.close()
             self._transport = None
@@ -310,14 +322,16 @@ class ViscaClient:
     # Which reply belongs to which request: an earlier command's completion (y0 5Z FF, socket Z = 1 or 2) can
     # arrive after the next request was sent. Plain VISCA has no sequence numbers, so replies are told apart
     # the way VISCA defines them: a command is answered by an ACK on its socket (then a completion on that
-    # socket), an inquiry by data on socket 0 (y0 50 ... FF). Anything else is a late reply and skipped.
+    # socket) or refused with an error on socket 0 (syntax error, buffer full), an inquiry by data on socket 0
+    # (y0 50 ... FF). Anything else is a late reply and skipped, also an error on socket 1 or 2 (cancelled,
+    # not executable): that is about a command the camera had already ACKed.
 
     async def command(self, msg: bytes, wait_completion: bool = False) -> Reply:
         """Send a command and wait for its ACK (and completion if asked)."""
         async with self._lock:
             self._drain()
             self._send(PT_COMMAND, msg)
-            reply = await self._next_reply(lambda r: r.kind is not ReplyKind.COMPLETION)
+            reply = await self._next_reply(lambda r: r.kind is ReplyKind.ACK or (r.kind is ReplyKind.ERROR and r.socket == 0))
             if reply.kind is ReplyKind.ACK and wait_completion:
                 socket = reply.socket
                 reply = await self._next_reply(lambda r: r.socket == socket and r.kind is not ReplyKind.ACK,
@@ -402,10 +416,14 @@ class ViscaTcpClient(ViscaClient):
         self._reader_task: asyncio.Task | None = None
 
     async def connect(self) -> None:
-        from trackxen.devices.udp import resolve
+        from trackxen.devices.udp import resolve_async
 
-        reader, self._writer = await asyncio.wait_for(asyncio.open_connection(resolve(self.host), self.port),
-                                                      max(self.timeout, 1.0) * 3)
+        host = await resolve_async(self.host)
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, self.port), max(self.timeout, 1.0) * 3)
+        if self._closed:  # closed while connecting: hang up, or this connection may hold the camera's only slot
+            writer.close()
+            raise ConnectionError(f"{self.host}:{self.port}: closed while connecting")
+        self._writer = writer
         self._reader_task = asyncio.create_task(self._read(reader))
 
     async def _read(self, reader: asyncio.StreamReader) -> None:
@@ -419,9 +437,12 @@ class ViscaTcpClient(ViscaClient):
                     buffer = buffer[end:]
         except OSError as e:
             self.last_error = e
-        self._writer = None  # closed by the camera: commands now fail, and the camera link reconnects
+        writer, self._writer = self._writer, None  # closed by the camera: commands now fail, and the link reconnects
+        if writer:
+            writer.close()
 
     def close(self) -> None:
+        self._closed = True
         if self._reader_task:
             self._reader_task.cancel()
         if self._writer:

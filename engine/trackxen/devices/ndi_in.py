@@ -3,6 +3,11 @@
 `find_sources()` lists NDI sources on the network. `NdiReceiver` keeps the newest
 frame from one source as a BGR numpy array, with the time it arrived, so the
 tracker never works on old, queued frames.
+
+The finder is never asked to wait: cyndilib's `wait_for_sources()` blocks inside the NDI
+library while holding the GIL, which paused every other thread of the process for the whole
+wait (measured: 3.0 s for a 3 s search, so the camera control loop and watchdog froze while
+a camera moved). The finder discovers sources on its own threads; we read its list and sleep.
 """
 
 from __future__ import annotations
@@ -19,6 +24,8 @@ from cyndilib.receiver import Receiver
 from cyndilib.video_frame import VideoFrameSync
 from cyndilib.wrapper.ndi_recv import RecvBandwidth, RecvColorFormat
 
+POLL_INTERVAL = 0.05  # seconds between looks at the finder's source list
+
 
 @dataclass(frozen=True)
 class NdiSourceInfo:
@@ -32,12 +39,18 @@ def find_sources(timeout: float = 3.0) -> list[NdiSourceInfo]:
     finder.open()
     try:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            finder.wait_for_sources(max(0.0, deadline - time.monotonic()))
+        while (left := deadline - time.monotonic()) > 0:
+            time.sleep(min(POLL_INTERVAL, left))  # (lets the other threads run, unlike wait_for_sources)
             finder.update_sources()
-        return [NdiSourceInfo(s.name, s.host_name, s.stream_name) for s in finder.iter_sources()]
+        return [NdiSourceInfo(s.name, s.host_name, s.stream_name) for s in finder.iter_sources() if s.valid]
     finally:
         finder.close()
+
+
+def _name_parts(name: str) -> tuple[str, str]:
+    """Host and stream name of "HOST (STREAM)", lower case."""
+    host, _, stream = name.lower().partition(" (")
+    return host, stream.removesuffix(")")
 
 
 def to_bgr(bgrx: np.ndarray) -> np.ndarray:
@@ -67,6 +80,8 @@ class NdiReceiver:
         self.source_name, self.poll_hz = source_name, poll_hz
         self.bandwidth = RecvBandwidth.lowest if low_bandwidth else RecvBandwidth.highest
         self._finder = Finder()
+        self._search_until = 0.0  # start() waits for the source until then (set when the finder opens)
+        self._matches: list[str] = []  # sources the last look found for a partial name
         self._receiver: Receiver | None = None
         self._video = VideoFrameSync()
         self._latest: Frame | None = None
@@ -81,26 +96,42 @@ class NdiReceiver:
         self.connected = False
 
     def _find(self) -> object | None:
-        names = self._finder.get_source_names()
+        """The configured source by its exact name, or by part of a name ("TRACKXEN SIM 1" also finds
+        "ANTTONPC (TRACKXEN SIM 1)") when only one source has that part. A full "HOST (STREAM)" name is
+        taken only as it is, so "ALTAR (CAM)" never picks "SIDEALTAR (CAM)" before its own source shows up."""
+        names, self._matches = self._finder.get_source_names(), []
         if self.source_name in names:
             return self._finder.get_source(self.source_name)
         wanted = self.source_name.lower()
-        for name in names:  # "TRACKXEN SIM 1" also finds "ANTTONPC (TRACKXEN SIM 1)"
-            if wanted in name.lower():
-                self.source_name = name
-                return self._finder.get_source(name)
-        return None
+        if " (" in wanted and wanted.endswith(")"):
+            matches = [name for name in names if name.lower() == wanted]
+        else:
+            matches = [name for name in names if wanted in name.lower()]
+            if len(matches) > 1:  # "CAM1" with "PC (CAM1)" and "PC (CAM10)": a whole host or stream name wins
+                matches = [name for name in matches if wanted in _name_parts(name)] or matches
+        self._matches = matches
+        if len(matches) != 1:  # none yet, or several: don't guess which camera's video to track
+            return None
+        self.source_name = matches[0]
+        return self._finder.get_source(matches[0])
 
     def start(self, timeout: float = 5.0) -> None:
-        self._finder.open()
-        deadline = time.monotonic() + timeout
-        source = None
-        while time.monotonic() < deadline and source is None:
-            self._finder.wait_for_sources(0.5)
+        """Connect to the source, waiting until `timeout` seconds after the finder opened for it to be
+        announced. After a miss the finder stays open and keeps looking, so a retry (the worker retries
+        every few seconds on its detection thread) only checks what it found meanwhile and returns at once."""
+        if not self._finder.is_open:
+            self._finder.open()
+            self._search_until = time.monotonic() + timeout
+        while True:
             self._finder.update_sources()
             source = self._find()
+            if source is not None or time.monotonic() >= self._search_until:
+                break
+            time.sleep(POLL_INTERVAL)  # (lets the other threads run, unlike wait_for_sources)
         if source is None:
-            self._finder.close()
+            if len(self._matches) > 1:
+                raise LookupError(f"NDI name {self.source_name} matches several sources: {', '.join(self._matches)}"
+                                  " (choose one of them)")
             raise LookupError(f"NDI source not found: {self.source_name}")
         self._receiver = Receiver(color_format=RecvColorFormat.BGRX_BGRA, bandwidth=self.bandwidth,
                                   recv_name="trackxen")
