@@ -524,6 +524,10 @@ third).
   - Found in a third review: camera commands (App Settings 1-5, vMix input, preset links reset, face
     delete) sent while an apply closed the old cameras were answered ok but lost. They are kept now,
     also in settings.json. A show file still replaces everything.
+  - Found in a fourth review: when that second save failed (a full disk, a file held open on
+    Windows), the apply stopped halfway: old cameras closed, no vision worker, so no camera could be
+    moved or tracked until a restart, and no problem light. It now logs a "settings" error and goes
+    on; the new settings were saved before the cameras were closed.
 - **Log writes:** a full disk, a deleted logs folder or a locked file no longer raises out of the log.
   Before, that could end the control loop with a camera moving. A "pc" warning says the log files
   can't be written, and a deleted folder is made again.

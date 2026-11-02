@@ -581,6 +581,40 @@ def test_camera_commands_during_an_apply_are_kept(tmp_path, workers, stub_links)
     asyncio.run(scenario())
 
 
+def test_an_apply_whose_second_save_fails_still_brings_the_cameras_and_vision_back(tmp_path, workers, stub_links):
+    """The save after the old cameras are closed (for the commands sent meanwhile) can fail (a full disk, a file
+    held open on Windows). The new settings are already saved and in use: the apply must still start the new
+    cameras and the vision worker, or no camera can be moved or tracked until a restart."""
+    async def scenario():
+        app = make_app(tmp_path, config("cam1", "cam2"))
+        events = record_events(app)
+        await app.start()
+        blocked = tmp_path / "settings.tmp"  # (where AppConfig.save writes first)
+        try:
+            for link in StubLink.made:
+                close = link.close
+
+                async def close_then_block(close=close):
+                    await close()
+                    blocked.mkdir(exist_ok=True)  # the disk fails while the old cameras are being closed
+
+                link.close = close_then_block
+            renamed = app.config.model_copy(deep=True)
+            renamed.cameras[1].name = "Choir"  # a camera change: the sessions are made again
+            await app.apply_config(renamed)
+            assert app.sessions["cam2"].cfg.name == "Choir"
+            assert all(s.link.started and not s.link.closed for s in app.sessions.values())
+            assert app.worker is not None and len(workers.alive) == 1
+            assert [e for e in events if e[0] == "settings" and e[2] == "error"]
+            assert AppConfig.load(tmp_path / "settings.json").cameras[1].name == "Choir"  # (the first save)
+        finally:
+            if blocked.exists():
+                blocked.rmdir()
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
 def test_every_new_worker_after_the_first_tells_the_sessions(tmp_path, workers, stub_links, monkeypatch):
     told = []
     monkeypatch.setattr(CameraSession, "worker_restarted", lambda self: told.append(self.cfg.id), raising=False)

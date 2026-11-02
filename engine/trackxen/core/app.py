@@ -226,7 +226,10 @@ class App:
                         for field in LIVE_CAMERA_FIELDS:
                             setattr(new[s.cfg.id], field, getattr(s.cfg, field))
                 if self.config_path:
-                    self.config.save(self.config_path)
+                    try:  # (the new settings are saved already: the apply goes on, the old cameras are closed)
+                        self.config.save(self.config_path)
+                    except OSError as e:  # e.g. a full disk, or the file held open on Windows
+                        self._log_error("settings", f"can't save the camera changes made during the apply: {e}")
             # the operator's Audio follow and On Air switches, as they are now (also a STOP ALL meanwhile), and
             # vMix's last on-air state (it stays while vMix is not connected) go to the new sessions (_start_cameras)
             self._carry = {s.cfg.id: (s.audio_follow, s.on_air_manual, s.on_air_tally) for s in closing}
