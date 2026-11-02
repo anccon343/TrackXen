@@ -3,11 +3,14 @@ import importlib.util
 import io
 import json
 import os
+import re
 import struct
+import sys
 import threading
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -31,6 +34,8 @@ class Wheels(ThreadingHTTPServer):
 
     def __init__(self, files: dict[str, bytes]):
         self.files, self.fail_next, self.ranges = files, 0, True
+        self.cut_next, self.cut_after = 0, 0  # break the connection after this many bytes of a part
+        self.requested: list[str] = []  # the Range of every GET
         super().__init__(("127.0.0.1", 0), Handler)
 
     @property
@@ -57,6 +62,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         rng = self.headers.get("Range")
+        self.server.requested.append(rng)
         if rng and self.server.ranges:
             start, end = (int(v) for v in rng.removeprefix("bytes=").split("-"))
             body = body[start:end + 1]
@@ -65,6 +71,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        if self.server.cut_next and rng:
+            self.server.cut_next -= 1
+            body = body[:self.server.cut_after]  # the connection drops halfway
         self.wfile.write(body)
 
 
@@ -185,3 +194,95 @@ def test_manifest_tool_reads_a_wheels_directory_over_range_requests(wheels):
     for name, info in members.items():
         assert (info.header_offset, info.compress_size, info.CRC) == (
             local[name].header_offset, local[name].compress_size, local[name].CRC)
+
+
+def manifest_tool():
+    spec = importlib.util.spec_from_file_location("gpu_libs_manifest", ROOT / "tools" / "gpu_libs_manifest.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    return tool
+
+
+def test_what_the_manifest_tool_writes_is_what_the_app_downloads(tmp_path, wheels, monkeypatch):
+    server, _, contents = wheels
+    tool = manifest_tool()
+    site = tmp_path / "site-packages"  # the "installed" packages: the same files as in the wheel
+    for path, data in contents.items():
+        (site / path).parent.mkdir(parents=True, exist_ok=True)
+        (site / path).write_bytes(data)
+    versions = {"nvidia-cuda-runtime": "13.4.92", "nvidia-cudnn-cu13": "9.27.0.42", "tensorrt-cu13-libs": "10.16.1.11"}
+
+    class Distribution:
+        def __init__(self, name):
+            self.version = versions.get(name, "1.0")
+            self.files = [PurePosixPath(p) for p in contents] if name == "tensorrt-cu13-libs" else []
+
+        def locate_file(self, record):
+            return site / record
+
+    monkeypatch.setattr(tool, "md", SimpleNamespace(distribution=Distribution))
+    monkeypatch.setattr(tool, "wheel_url", lambda client, name, version: (server.base + "/test.whl", ""))
+    monkeypatch.setattr(tool, "OUT", tmp_path / "gpu-libs.json")
+    monkeypatch.setattr(sys, "argv", ["gpu_libs_manifest.py"])
+    assert tool.main() == 0
+    libs = GpuLibraries(tmp_path / "libs", tool.OUT, generations={"sm89"})
+    assert libs.id == "cuda13.4-cudnn9.27-trt10.16.1"
+    assert {Path(f["path"]).name for f in libs.files} == {
+        "cudart64_13.dll", "cudnn64_9.dll", "nvinfer_10.dll", "nvinfer_builder_resource_sm89_10.dll"}
+    libs.download()
+    for f in libs.files:
+        assert (libs.dir / f["path"]).read_bytes() == contents[f["path"]]
+
+
+def test_the_shipped_manifest_has_what_the_download_needs():
+    tool = manifest_tool()
+    data = json.loads(gpu_libs.MANIFEST.read_text(encoding="utf-8"))
+    assert data["id"] and data["files"]
+    for f in data["files"]:
+        assert f["url"].startswith("https://") and f["url"].endswith(".whl") and f["path"].endswith(".dll")
+        assert f["size"] > 0 and f["compressed"] > 0 and f["data_offset"] > 0
+        assert f["method"] in (0, gpu_libs.DEFLATED) and re.fullmatch(r"[0-9a-f]{64}", f["sha256"])
+        builder = tool.BUILDER.search(f["path"])
+        assert f["gpu"] == (builder.group(1).lower() if builder else None)
+    for gpu in ("sm75", "sm89", "sm120"):  # every supported GPU gets its own TensorRT builder file
+        names = {Path(f["path"]).name for f in wanted(data["files"], {gpu})}
+        assert f"nvinfer_builder_resource_{gpu}_10.dll" in names and len([n for n in names if "builder" in n]) == 1
+
+
+def test_gpus_too_old_for_cuda_13_get_nothing(tmp_path, wheels):
+    _, manifest, _ = wheels
+    files = json.loads(manifest.read_text())["files"]
+    for old in ({"sm52"}, {"sm61"}, {"sm70"}, {"sm72"}):  # Maxwell, Pascal, Volta: CUDA 13 dropped them
+        assert wanted(files, old) == []
+    assert wanted(files, {"sm61", "sm89"}) == wanted(files, {"sm89"})
+    assert GpuLibraries(tmp_path / "libs", manifest, generations={"sm61"}).state == "not_needed"
+
+
+def test_a_broken_connection_carries_on_where_it_stopped(tmp_path, wheels, monkeypatch):
+    server, manifest, contents = wheels
+    monkeypatch.setattr(gpu_libs, "CHUNK", 16384)
+    server.cut_next, server.cut_after = 1, 100_000
+    libs = GpuLibraries(tmp_path / "libs", manifest, generations={"sm89"})
+    libs.download()
+    assert libs.ready and libs.done == libs.total
+    for f in libs.files:
+        assert (libs.dir / f["path"]).read_bytes() == contents[f["path"]]
+    first, again = (int(r.removeprefix("bytes=").split("-")[0]) for r in server.requested[:2])
+    assert again - first >= 16384  # only the rest of the file was asked for
+    assert len(server.requested) == len(libs.files) + 1
+
+
+def test_a_file_that_cant_be_moved_into_place_isnt_fetched_again(tmp_path, wheels, monkeypatch):
+    server, manifest, _ = wheels
+    real, failed = os.replace, []
+
+    def replace(src, dst):
+        if not failed:  # e.g. a virus scanner still has the new file open
+            failed.append(dst)
+            raise PermissionError("the file is being used by another process")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    libs = GpuLibraries(tmp_path / "libs", manifest, generations={"sm89"})
+    libs.download()
+    assert libs.ready and failed and len(server.requested) == len(libs.files)  # nothing fetched twice

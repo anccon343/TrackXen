@@ -3,7 +3,9 @@ and its once-a-second samples thinned out to a few thousand points for the graph
 
 from __future__ import annotations
 
+import itertools
 import json
+import math
 import re
 from pathlib import Path
 
@@ -44,16 +46,30 @@ def events(folder: Path, day: str) -> list[dict]:
     return out
 
 
+def _count_lines(f) -> int:
+    count, last = 0, b"\n"
+    while chunk := f.read(1 << 20):
+        count += chunk.count(b"\n")
+        last = chunk[-1:]
+    return count + (last != b"\n")  # (the last line may have no line end)
+
+
 def stats(folder: Path, day: str, max_points: int = 2000) -> list[dict]:
     """The day's samples, every n-th one so at most `max_points`; per camera: frames and detections
-    per second, detection time and frame-to-result time (medians)."""
+    per second, detection time and frame-to-result time (medians).
+
+    The file is read a piece at a time, never whole: a day with four cameras is about 250 MB, and
+    this runs in the process that drives the cameras."""
     path = file_of(folder, day, "stats")
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    step = max(1, len(lines) // max_points)
     out = []
-    for line in lines[::step]:
+    with path.open("rb") as f:
+        total = _count_lines(f)
+        step = max(1, math.ceil(total / max(1, max_points)))
+        f.seek(0)
+        lines = [line.decode("utf-8", errors="replace") for line in itertools.islice(f, 0, total, step)]
+    for line in lines:
         try:
             s = json.loads(line)
         except ValueError:
