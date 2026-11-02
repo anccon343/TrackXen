@@ -580,7 +580,9 @@ class App:
                 return {"ok": True}
             if kind == "audio_settings":  # audio-follow settings and mic mappings (validated, saved)
                 data = {**self.config.audio.model_dump(), **cmd["settings"]}
-                self.config.audio = AudioFollowConfig.model_validate(data)
+                audio = AudioFollowConfig.model_validate(data)
+                self.faces.unmap_mics(audio)  # (a page loaded before a face was deleted may still name it)
+                self.config.audio = audio
                 if self.config_path:
                     self.config.save(self.config_path)
                 return {"ok": True, "audio": self.config.audio.model_dump()}

@@ -542,6 +542,23 @@ def test_stop_all_while_settings_are_applied_keeps_audio_follow_off(tmp_path, wo
 # --- commands -------------------------------------------------------------------------------------
 
 
+def test_audio_settings_never_map_a_mic_to_a_deleted_face(tmp_path, workers, stub_links):
+    async def scenario():
+        app = make_app(tmp_path, config("cam1"))
+        await app.start()
+        try:
+            pastor = app.faces.store.add("Pastor", [0.1] * 4, b"")
+            mappings = [{"channel": 1, "label": "Pastor", "face": pastor.id},
+                        {"channel": 2, "label": "Guest", "face": "deleted-on-another-tablet"}]
+            reply = await app.command({"type": "audio_settings", "settings": {"enabled": True, "mappings": mappings}})
+            assert reply["ok"] and [m["face"] for m in reply["audio"]["mappings"]] == [pastor.id, ""]
+            assert [m.face for m in AppConfig.load(app.config_path).audio.mappings] == [pastor.id, ""]
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
 def test_bad_commands_are_answered_not_raised(tmp_path, workers, stub_links):
     async def scenario():
         app = make_app(tmp_path, config("cam1"))
