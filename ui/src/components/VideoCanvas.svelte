@@ -24,10 +24,18 @@
   let silhouetteAt: { x: number; y: number } | null = null;
   let lastSent = 0;
 
+  // Redrawn only when something it shows changed: a new picture or status, an edit, the size.
   $effect(() => {
     let raf = 0;
+    let drawn: unknown[] = [];
     const loop = () => {
-      draw();
+      const now = [live.previews[camera.id], camera, override, silhouetteAt, ui.mouseMode, ui.silhouette, faces.guide,
+                   faces.list, interactive, overlays, editable, shown, canvas?.clientWidth, canvas?.clientHeight,
+                   window.devicePixelRatio];
+      if (now.some((v, i) => v !== drawn[i])) {
+        drawn = now;
+        draw();
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -273,7 +281,8 @@
   /** Settings changes go through the settings store when it holds this camera (it shows them at once). */
   function settingsCommand(cmd: Record<string, unknown>) {
     if (slots.camera === camera.id) {
-      return cmd.type === "slot_settings" ? slots.patch(cmd.settings as Record<string, unknown>) : slots.command(cmd);
+      return cmd.type === "slot_settings" ? slots.patch(cmd.settings as Record<string, unknown>, camera.id)
+        : slots.command(cmd, true, camera.id);
     }
     return live.request({ camera: camera.id, ...cmd }).then((reply) => {
       if (!reply.ok) ui.notify(reply.error ?? "Not possible");

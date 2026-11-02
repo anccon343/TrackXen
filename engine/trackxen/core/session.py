@@ -119,6 +119,19 @@ class CameraSession:
             return LOST
         return ANGLE_FIXED if self.fixed is not None else TRACKING
 
+    _revs = 0  # every session's settings_rev comes from this one count (see below)
+
+    @property
+    def settings_rev(self) -> int:
+        """Bumped (+= 1) on every settings change, so pages know to reload them. Applying settings or
+        loading a show file makes new sessions: their count goes on from above the old ones'."""
+        return self._settings_rev
+
+    @settings_rev.setter
+    def settings_rev(self, value: int) -> None:
+        CameraSession._revs = max(CameraSession._revs + 1, value)
+        self._settings_rev = CameraSession._revs
+
     # --- settings ----------------------------------------------------------------------
 
     def refresh(self) -> None:

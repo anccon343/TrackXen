@@ -1,9 +1,16 @@
 <script lang="ts">
   import { live } from "../lib/live.svelte";
+  import { ui } from "../lib/ui.svelte";
 
   type View = "cameras" | "statistics" | "settings";
   let { view, onview }: { view: View; onview: (v: View) => void } = $props();
   let perf = $derived(live.status?.performance);
+
+  // Over HTTP while the live connection is down; says so when it couldn't reach TrackXen.
+  async function stopAll() {
+    const reply = await live.requestReliably({ type: "stop_all" });
+    if (!reply.ok) ui.notify(`STOP ALL didn't reach TrackXen (${reply.error ?? "no answer"}): press it again`);
+  }
 </script>
 
 <header class="top">
@@ -17,7 +24,7 @@
   {#if perf}<span class="mode" title="Performance mode (Settings → Performance)">{perf.mode.toUpperCase()}{perf.mode === "auto" ? ` · ${perf.preset}` : ""}</span>{/if}
   <span class="badge conn {live.connected ? 'state-tracking' : 'state-no_video'}" title={live.connected ? "Connected" : "Disconnected"}>
     <span class="txt">{live.connected ? "Connected" : "Disconnected"}</span></span>
-  <button class="danger" onclick={() => live.send({ type: "stop_all" })} title="Stop tracking and stop every camera">STOP ALL</button>
+  <button class="danger" onclick={stopAll} title="Stop tracking and stop every camera">STOP ALL</button>
 </header>
 
 <style>

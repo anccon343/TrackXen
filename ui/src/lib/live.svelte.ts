@@ -163,6 +163,9 @@ export interface HistoryPoint {
   detect: number;
 }
 
+/** How long a camera that drops out of the status stays listed (see keepMissing). */
+const CAMERA_GRACE_MS = 5000;
+
 class Live {
   status = $state<Status | null>(null);
   connected = $state(false);
@@ -174,6 +177,7 @@ class Live {
   private lastStats = "";
   private nextId = 1;
   private pending = new Map<number, (reply: Reply) => void>();
+  private missingSince = new Map<string, number>();
 
   connect(): void {
     if (this.ws) return; // already connected or connecting
@@ -195,7 +199,7 @@ class Live {
     if (typeof ev.data === "string") {
       const msg = JSON.parse(ev.data);
       if (msg.type === "status") {
-        this.status = msg as Status;
+        this.status = this.keepMissing(msg as Status);
         this.recordHistory(msg as Status);
       } else if (msg.type === "reply" && msg.request) {
         this.pending.get(msg.request)?.(msg as Reply);
@@ -210,6 +214,21 @@ class Live {
     this.previews[camera]?.close();
     this.previews[camera] = bitmap;
     this.previewTick++;
+  }
+
+  /** While settings are applied the engine restarts the cameras, and for a moment (longer when cameras
+   *  don't answer) the status lists none or only some of them. A camera that drops out stays listed as
+   *  last seen for a few seconds, so pages don't jump to the first-start page or to another camera. */
+  private keepMissing(next: Status): Status {
+    const prev = this.status?.cameras ?? [];
+    const ids = new Set(next.cameras.map((c) => c.id));
+    const now = Date.now();
+    const kept = prev.filter((c) => !ids.has(c.id) && now - (this.missingSince.get(c.id) ?? now) < CAMERA_GRACE_MS);
+    for (const id of [...this.missingSince.keys()]) if (!kept.some((c) => c.id === id)) this.missingSince.delete(id);
+    for (const c of kept) if (!this.missingSince.has(c.id)) this.missingSince.set(c.id, now);
+    if (!kept.length) return next;
+    const order = (id: string) => (prev.findIndex((c) => c.id === id) + 1 || Infinity);
+    return { ...next, cameras: [...next.cameras, ...kept].sort((a, b) => order(a.id) - order(b.id)) };
   }
 
   /** Keep the last 3 minutes of once-a-second samples for the statistics graphs. */
@@ -241,21 +260,45 @@ class Live {
       }, 5000);
     });
   }
+
+  /** For commands that must arrive (stops): like request(), but over HTTP while the live connection
+   *  is down (reconnecting), or when `closing` (the page is being closed: the request still finishes). */
+  async requestReliably(cmd: Record<string, unknown>, closing = false): Promise<Reply> {
+    if (this.ws?.readyState === WebSocket.OPEN && !closing) return this.request(cmd);
+    try {
+      const r = await fetch("/api/command", { method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify(cmd), keepalive: true });
+      if (r.status === 401) access.lost();
+      return r.ok ? await r.json() : { ok: false, error: `TrackXen answered ${r.status}` };
+    } catch {
+      return { ok: false, error: "TrackXen is not reachable" };
+    }
+  }
 }
 
 export const live = new Live();
 
+/** An HTTP request the engine refused (status: e.g. 409, 422). */
+export class HttpError extends Error {
+  constructor(message: string, readonly status: number, readonly body = "") {
+    super(message);
+  }
+}
+
 export async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (r.status === 401) access.lost();
-  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  if (!r.ok) throw new HttpError(`${url}: ${r.status}`, r.status);
   return r.json();
 }
 
 export async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (r.status === 401) access.lost();
-  if (!r.ok) throw new Error(`${url}: ${r.status} ${await r.text()}`);
+  if (!r.ok) {
+    const text = await r.text();
+    throw new HttpError(`${url}: ${r.status} ${text}`, r.status, text);
+  }
   return r.json();
 }
 

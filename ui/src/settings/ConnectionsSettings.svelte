@@ -13,8 +13,11 @@
   let mixer = $derived(live.status?.mixer ?? null);
   let cameras = $derived(live.status?.cameras ?? []);
 
-  async function load() {
+  /** The saved settings, and (fields) the addresses in the form: not after choosing a vMix input,
+   *  which would wipe addresses typed but not applied yet. */
+  async function load(fields = true) {
     cfg = await getJSON("/api/config");
+    if (!fields) return;
     vmixHost = cfg.vmix.host;
     vmixPort = cfg.vmix.port;
     mixerHost = cfg.mixer.host;
@@ -24,9 +27,15 @@
     load();
   });
 
+  const isPort = (v: unknown) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 65535;
+
   async function apply() {
-    const reply = await live.request({ type: "connections", vmix: { host: vmixHost.trim(), port: +vmixPort },
-                                       mixer: { host: mixerHost.trim(), port: +mixerPort } });
+    if (!isPort(vmixPort) || !isPort(mixerPort)) { // an emptied field would be sent as port 0
+      ui.notify("The ports must be numbers from 1 to 65535");
+      return;
+    }
+    const reply = await live.request({ type: "connections", vmix: { host: vmixHost.trim(), port: vmixPort },
+                                       mixer: { host: mixerHost.trim(), port: mixerPort } });
     ui.notify(reply.ok ? "Connections applied" : reply.error ?? "Not possible");
     await load();
   }
@@ -44,7 +53,7 @@
   async function setInput(camera: string, input: string) {
     const reply = await live.request({ type: "vmix_input", camera, input });
     if (!reply.ok) ui.notify(reply.error ?? "Not possible");
-    await load();
+    await load(false);
   }
 
   const inputOf = (camera: string): string => cfg?.cameras.find((c: { id: string }) => c.id === camera)?.vmix_input ?? "";

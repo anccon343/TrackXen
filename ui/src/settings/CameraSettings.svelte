@@ -45,7 +45,7 @@
   }
 
   function add() {
-    settings.draft!.cameras = [...cams, cameraTypes.create("birddog_p400", cams.length + 1)];
+    settings.draft!.cameras = [...cams, cameraTypes.add("birddog_p400", cams)];
   }
 
   function remove(i: number) {
@@ -88,7 +88,7 @@
     <input type="text" bind:value={cam.name} />
   </Field>
   <Field label="Camera type" help={type?.about ?? ""} changed={settings.changed((c) => c.cameras[i]?.model)}>
-    <select value={cam.model ?? "birddog_p400"} onchange={(e) => cameraTypes.apply(cam, (e.currentTarget as HTMLSelectElement).value, i + 1)}>
+    <select value={cam.model ?? "birddog_p400"} onchange={(e) => cameraTypes.apply(cam, (e.currentTarget as HTMLSelectElement).value, cams)}>
       {#each Object.entries(cameraTypes.list) as [key, t]}<option value={key}>{t.name}</option>{/each}
     </select>
   </Field>

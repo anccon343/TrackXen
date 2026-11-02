@@ -77,8 +77,8 @@
         if (c.ndi) Object.assign(cam, { ndi: c.ndi, video: "ndi", name: c.name || cam.name });
         return cam;
       });
-      await settings.apply();
-      ui.notify(`${settings.draft!.cameras.length} camera(s) added`);
+      const n = settings.draft!.cameras.length;
+      ui.notify(await settings.apply() ? `${n} camera(s) added` : `The cameras couldn't be added: ${settings.error}`);
     } finally {
       adding = false;
     }
@@ -100,8 +100,8 @@
     await settings.load();
     settings.draft!.performance_mode = rec.mode;
     if (rec.auto_preset) settings.draft!.auto_preset = rec.auto_preset;
-    await settings.apply();
-    ui.notify(`Performance mode: ${rec.mode.toUpperCase()}`);
+    ui.notify(await settings.apply() ? `Performance mode: ${rec.mode.toUpperCase()}`
+                                     : `The performance mode couldn't be set: ${settings.error}`);
   }
 
   const engineText: Record<string, string> = { tensorrt: "TensorRT (fastest)", cuda: "CUDA", directml: "DirectML", cpu: "CPU only (slow)" };

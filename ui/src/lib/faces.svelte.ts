@@ -13,6 +13,8 @@ class Faces {
   guide = $state<string | null>(null);
   version = $state(0); // bumps thumbnails' URLs after changes
   private loaded = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null; // stopGuide trying again
+  private turn = 0;
 
   name(id: string | undefined): string {
     return (id && this.list.find((f) => f.id === id)?.name) || "";
@@ -38,13 +40,33 @@ class Faces {
   }
 
   async startGuide(camera: string): Promise<void> {
+    this.newTurn();
     this.guide = camera;
     await live.request({ type: "face_guide", camera, on: true });
   }
 
-  async stopGuide(): Promise<void> {
-    if (this.guide) await live.request({ type: "face_guide", camera: this.guide, on: false });
-    this.guide = null;
+  /** Switch the registration frame off. The engine keeps it on (over that camera's picture on every
+   *  device) until this arrives, so it goes over HTTP while the live connection is down, and is sent
+   *  again every 2 s until it gets through. */
+  async stopGuide(retry = false): Promise<void> {
+    const camera = this.guide;
+    const turn = this.newTurn();
+    if (!camera) return;
+    const reply = await live.requestReliably({ type: "face_guide", camera, on: false });
+    if (turn !== this.turn) return; // started or stopped again meanwhile
+    if (reply.ok || reply.error === "unknown camera") {
+      this.guide = null;
+      return;
+    }
+    if (!retry) ui.notify(`The registration frame is still on (${reply.error ?? "no answer"}): trying again`);
+    this.retryTimer = setTimeout(() => this.stopGuide(true), 2000);
+  }
+
+  /** A newer start or stop of the frame: an older one's late answer or retry no longer counts. */
+  private newTurn(): number {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    return ++this.turn;
   }
 
   async wipe(): Promise<void> {
@@ -54,3 +76,8 @@ class Faces {
 }
 
 export const faces = new Faces();
+
+// The page closed or reloaded while registering: switch the frame off on the way out.
+addEventListener("pagehide", () => {
+  if (faces.guide) void live.requestReliably({ type: "face_guide", camera: faces.guide, on: false }, true);
+});
