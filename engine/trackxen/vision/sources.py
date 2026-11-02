@@ -189,23 +189,30 @@ class StreamSource:
         while not self._stop.is_set():
             try:
                 container = av.open(self.url, options=options, timeout=(self.timeout, self.timeout))
-            except (av.FFmpegError, OSError) as e:
-                self.last_error = f"can't open {self.source_name}: {e}"
+            except Exception as e:  # noqa: BLE001 - reported (stats), tried again
+                self.last_error = f"can't open {self.source_name}: {self._clean(e)}"
                 self._stop.wait(2.0)
                 continue
+            failed = False
             try:
                 self._read(container)
-            except (av.FFmpegError, OSError) as e:
-                self.last_error = f"{self.source_name}: {e}"
+            except Exception as e:  # noqa: BLE001 - e.g. no video in the stream: reported, tried again
+                self.last_error, failed = f"{self.source_name}: {self._clean(e)}", True
             finally:
                 self.connected = False
                 container.close()
-            if not self.loop:
+            if failed or not self.loop:
                 self._stop.wait(1.0)  # the camera rebooted or the network dropped: open it again
+
+    def _clean(self, error: Exception) -> str:
+        """An error's text without the password: FFmpeg's messages repeat the URL as it was given."""
+        return re.sub(r"//[^/@\s]+@", "//", str(error).replace(self.url, self.source_name))
 
     def _read(self, container) -> None:
         import av
 
+        if not container.streams.video:
+            raise LookupError("no video in this stream")
         stream = container.streams.video[0]
         stream.thread_type = "SLICE"
         stream.codec_context.flags |= av.codec.context.Flags.low_delay

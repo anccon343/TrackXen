@@ -189,7 +189,8 @@ class PoseDetector:
         return self.session.run(None, {self.input_name: batch.data})[0][:batch.count]
 
     def decode(self, batch: Batch, out: np.ndarray) -> list[list[Person]]:
-        if out.shape[-1] == 57 or (out.ndim == 3 and out.shape[1] <= 300 and out.shape[2] > 6):
+        # end-to-end: (batch, up to 300 people, 57); raw: (batch, 56, anchors), far more anchors than values
+        if out.shape[-1] == 57 or (out.ndim == 3 and out.shape[1] > out.shape[2]):
             return [decode_end2end(out[i], batch.boxes[i], self.conf) for i in range(batch.count)]
         return [decode_raw(out[i], batch.boxes[i], self.conf) for i in range(batch.count)]
 
