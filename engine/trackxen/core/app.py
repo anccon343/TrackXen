@@ -599,6 +599,9 @@ class App:
                 audio = AudioFollowConfig.model_validate(data)
                 self.faces.unmap_mics(audio)  # (a page loaded before a face was deleted may still name it)
                 self.config.audio = audio
+                if not audio.enabled:  # audio-follow off: no microphone cue goes on
+                    for s in self.sessions.values():
+                        s.drop_cue()
                 if self.config_path:
                     self.config.save(self.config_path)
                 return {"ok": True, "audio": self.config.audio.model_dump()}
@@ -649,7 +652,7 @@ class App:
         if kind == "audio_follow":
             session.audio_follow = as_bool(cmd["on"])
             if not session.audio_follow:
-                session.cue = None  # a microphone still waiting for its person doesn't pick them any more
+                session.drop_cue()  # a microphone still waiting for its person doesn't pick them any more
             return {"ok": True}
         if kind == "vmix_input":  # which vMix input shows this camera (key or number; "" = none)
             session.cfg.vmix_input = str(cmd.get("input", ""))

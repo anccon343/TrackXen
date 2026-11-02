@@ -140,7 +140,8 @@ higher in the list wins when two registered people appear.
   hand (here, with a preset, in vMix or with a joystick) is left alone for a while.
 - A microphone cue still waiting for its person is dropped when you click a person, use the joystick
   or move the camera, recall a preset, switch Auto Tracking off, or switch Audio follow off for that
-  camera. STOP ALL switches Audio follow off on every camera.
+  camera (or in Settings → Audio follow). A camera still on its way to the mic's preset then doesn't
+  start Auto Tracking there. STOP ALL switches Audio follow off on every camera.
 - **If vMix is not connected,** each camera keeps its last on-air state until vMix reports again,
   and a problem light says so. Use the **On Air** switch if needed.
 

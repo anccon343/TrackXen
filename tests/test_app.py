@@ -719,6 +719,31 @@ def test_audio_settings_never_map_a_mic_to_a_deleted_face(tmp_path, workers, stu
     asyncio.run(scenario())
 
 
+def test_switching_audio_follow_off_drops_the_cue_and_its_start_of_tracking(tmp_path, workers, stub_links):
+    """A mic sent the camera to its preset, to start tracking there: Audio follow off for that camera (or for all
+    of them in Settings) drops the cue, so the camera doesn't switch Auto Tracking on when it gets there."""
+    async def scenario():
+        cfg = config("cam1")
+        cfg.audio = AudioFollowConfig(enabled=True, mappings=[MicMapping(channel=1, label="Pastor", presets={"cam1": 3})])
+        app = make_app(tmp_path, cfg)
+        await app.start()
+        try:
+            s = app.sessions["cam1"]
+            for off in ({"type": "audio_follow", "camera": "cam1", "on": False},
+                        {"type": "audio_settings", "settings": {"enabled": False}}):
+                s.audio_follow = True
+                s.audio_cue(1, "Pastor", 3, "", False)
+                assert s.move.then_track
+                assert (await app.command(off))["ok"]
+                s.move.started -= 1.0  # the camera has arrived and stopped
+                s.tick(time.monotonic())
+                assert s.move is None and not s.tracking and s.cue is None, off
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
 def test_bad_commands_are_answered_not_raised(tmp_path, workers, stub_links):
     async def scenario():
         app = make_app(tmp_path, config("cam1"))

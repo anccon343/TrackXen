@@ -532,6 +532,12 @@ class CameraSession:
         elif not self.tracking:
             self.set_tracking(True, "audio cue", start_at_initial=False)
 
+    def drop_cue(self) -> None:
+        """Forget a microphone cue (Audio follow switched off), with its start of tracking at the preset."""
+        if self.cue and self.move:  # (with a cue waiting, the move under way is the cue's own)
+            self.move.then_track = False
+        self.cue = None
+
     def _answer_cue(self, slot: AppSettings, now: float) -> bool:
         """Find the cued person; True when the cue decided the target (or still waits for a move)."""
         face, label, deadline, channel = self.cue
