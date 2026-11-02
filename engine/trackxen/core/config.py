@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, PrivateAttr, ValidationError, ValidationInfo, field_validator, model_validator
 
 from trackxen.control.controller import DEFAULT_PAN_SPEEDS, DEFAULT_TILT_SPEEDS, Framing, Motion
-from trackxen.core.tracking_settings import SLOTS, AppSettings, PresetLink, default_slots
+from trackxen.core.tracking_settings import SLOTS, AppSettings, FiniteModel, PresetLink, bad_value, default_slots
 from trackxen.rules.audio import AudioFollowConfig
+
+Port = Annotated[int, Field(ge=1, le=65535)]
+Speed = Annotated[float, Field(gt=0.0)]  # degrees per second of one VISCA speed step
 
 
 def data_dir() -> Path:
@@ -40,20 +46,26 @@ def engine_cache_dir() -> Path:
     return models_dir() / "trt-cache"
 
 
-class LensConfig(BaseModel):
-    hfov_wide: float = 60.0
-    hfov_tele: float = 3.2
-    zoom_max: float = 16384.0
+class LensConfig(FiniteModel):
+    hfov_wide: float = Field(60.0, gt=0.0, lt=180.0)
+    hfov_tele: float = Field(3.2, gt=0.0)
+    zoom_max: float = Field(16384.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _zooms_in(self) -> LensConfig:
+        if self.hfov_tele >= self.hfov_wide:
+            raise bad_value("the lens must be narrower at full zoom: hfov_tele below hfov_wide")
+        return self
 
 
-class FaceRef(BaseModel):
+class FaceRef(FiniteModel):
     """A registered face as one camera uses it (Canon step 9): on or off; the list order is the priority."""
 
     id: str
     enabled: bool = True
 
 
-class CameraConfig(BaseModel):
+class CameraConfig(FiniteModel):
     id: str = "cam1"
     name: str = "Camera 1"
     model: Literal["birddog_p400", "ptzoptics_g2", "other"] = "birddog_p400"  # core/camera_models.py
@@ -64,17 +76,17 @@ class CameraConfig(BaseModel):
     stream_transport: Literal["tcp", "udp"] = "tcp"  # how the RTSP stream's packets travel
     host: str = ""  # camera IP for VISCA
     visca_transport: Literal["sony", "udp", "tcp"] = "sony"  # Sony VISCA over IP (header), plain VISCA over UDP or TCP
-    visca_port: int = 52381
-    freed_port: int | None = None  # UDP port this PC receives the camera's FreeD on
-    units_per_degree: float = 16.0  # VISCA position units per degree, pan (calibrated)
-    tilt_units_per_degree: float | None = None  # ... tilt, when it differs from pan
+    visca_port: Port = 52381
+    freed_port: Port | None = None  # UDP port this PC receives the camera's FreeD on
+    units_per_degree: float = Field(16.0, gt=0.0)  # VISCA position units per degree, pan (calibrated)
+    tilt_units_per_degree: float | None = Field(None, gt=0.0)  # ... tilt, when it differs from pan
     pan_sign: int = 1
     tilt_sign: int = 1
     video_delay: float = 0.08  # seconds from capture to arrival here (calibrated)
     low_bandwidth: bool = False
     lens: LensConfig = Field(default_factory=LensConfig)
-    pan_speeds: list[float] = Field(default_factory=lambda: list(DEFAULT_PAN_SPEEDS))
-    tilt_speeds: list[float] = Field(default_factory=lambda: list(DEFAULT_TILT_SPEEDS))
+    pan_speeds: list[Speed] = Field(default_factory=lambda: list(DEFAULT_PAN_SPEEDS), min_length=1)
+    tilt_speeds: list[Speed] = Field(default_factory=lambda: list(DEFAULT_TILT_SPEEDS), min_length=1)
     motion: Motion = Field(default_factory=Motion)
     lost_after: float = 1.5  # seconds without the target before it counts as lost
     refind_window: float = 10.0  # seconds to keep looking for the lost target where it was last seen
@@ -91,6 +103,12 @@ class CameraConfig(BaseModel):
         if isinstance(data, dict) and data.get("use_header") is False and "visca_transport" not in data:
             data = {**data, "visca_transport": "udp"}
         return data
+
+    @field_validator("slots")
+    @classmethod
+    def _five(cls, v: list[AppSettings]) -> list[AppSettings]:
+        """Always Canon's 5 App Settings (a show file with fewer would stop the camera from starting)."""
+        return (v + default_slots()[len(v):])[:SLOTS]
 
     @property
     def video_url(self) -> str:
@@ -109,7 +127,7 @@ class CameraConfig(BaseModel):
         return self.slot.composition
 
 
-class DetectionSettings(BaseModel):
+class DetectionSettings(FiniteModel):
     """Advanced mode: how certain the system must be before and while it tracks someone."""
 
     start_confidence: float = Field(0.35, ge=0.05, le=0.95)  # a new person needs this...
@@ -126,17 +144,17 @@ class DetectionSettings(BaseModel):
                 "max_missing": self.keep_missing_seconds, "match_iou": self.match_overlap}
 
 
-class VmixConfig(BaseModel):
+class VmixConfig(FiniteModel):
     host: str = ""  # the vMix PC (empty: no vMix; cameras are on air only by the manual switch)
-    port: int = 8099
+    port: Port = 8099
 
 
-class MixerConfig(BaseModel):
+class MixerConfig(FiniteModel):
     host: str = ""  # the MR18 / X Air mixer (empty: no audio-follow)
-    port: int = 10024
+    port: Port = 10024
 
 
-class AppConfig(BaseModel):
+class AppConfig(FiniteModel):
     cameras: list[CameraConfig] = Field(default_factory=list)
     vmix: VmixConfig = Field(default_factory=VmixConfig)
     mixer: MixerConfig = Field(default_factory=MixerConfig)
@@ -147,21 +165,119 @@ class AppConfig(BaseModel):
     model_override: str = ""  # e.g. "yolo26m-pose-640": use this model instead of the preset's
     engines: list[str] = Field(default_factory=lambda: ["tensorrt", "cuda", "directml", "cpu"])
     web_host: str = "0.0.0.0"
-    web_port: int = 8090
+    web_port: Port = 8090
     preview_fps: float = 12.0
     log_keep_days: int = 30
+    _load_notes: list[str] = PrivateAttr(default_factory=list)
+
+    @property
+    def load_notes(self) -> list[str]:
+        """What load() had to repair or replace (the app puts it in its log)."""
+        return self._load_notes
+
+    @model_validator(mode="after")
+    def _cameras_apart(self, info: ValidationInfo) -> AppConfig:
+        """Each camera needs its own id (it names the camera everywhere) and its own FreeD port (only one
+        connection can receive on a port). Settings saved by earlier versions are repaired when loading:
+        the later camera gets a free id, or no FreeD (its position is then asked over VISCA)."""
+        notes = (info.context or {}).get("notes")
+        ids, ports = set(), set()
+        for cam in self.cameras:
+            if cam.id in ids:
+                if notes is None:
+                    raise bad_value("two cameras have the id {id}: each camera needs its own", id=cam.id)
+                taken = {c.id for c in self.cameras}
+                new = next(f"cam{n}" for n in itertools.count(1) if f"cam{n}" not in taken)
+                notes.append(f"camera {cam.name!r} had the id {cam.id!r} of another camera: it is {new} now")
+                cam.id = new
+            ids.add(cam.id)
+            if cam.freed_port is not None and cam.freed_port in ports:
+                if notes is None:
+                    raise bad_value("two cameras use FreeD port {port}: each camera needs its own", port=cam.freed_port)
+                notes.append(f"camera {cam.id!r} used the FreeD port {cam.freed_port} of another camera: "
+                             "FreeD is off for it now")
+                cam.freed_port = None
+            elif cam.freed_port is not None:
+                ports.add(cam.freed_port)
+        return self
 
     @classmethod
     def load(cls, path: Path) -> AppConfig:
-        if path.exists():
-            return cls.model_validate_json(path.read_text(encoding="utf-8"))
-        return cls()
+        """Read the settings. TrackXen must start whatever the file holds: values that are refused now (saved
+        by an earlier version, or edited by hand) go back to their defaults, and a file that can't be read at
+        all (cut short by a power cut, say) is kept as settings.json.broken-<time> while the last good copy
+        (settings.json.bak) or else the defaults are used. What happened is printed and kept in load_notes."""
+        if not path.exists():
+            return cls()
+        notes: list[str] = []
+        try:
+            cfg = cls._read(path, notes)
+        except ValueError as e:  # not JSON, cut short, not text, or not settings at all
+            broken = path.with_name(f"{path.name}.broken-{time.strftime('%Y%m%d-%H%M%S')}")
+            path.replace(broken)
+            reason = str(e).splitlines()[0] if str(e) else type(e).__name__
+            notes = [f"{path.name} can't be read ({reason}); it is kept as {broken.name}"]
+            backup, repaired = path.with_name(path.name + ".bak"), []
+            try:
+                cfg = cls._read(backup, repaired)
+                notes += [f"using the last good copy, {backup.name}", *repaired]
+            except (OSError, ValueError):
+                cfg = cls()
+                notes.append("starting with the default settings")
+            try:
+                cfg.save(path)  # the next start reads it again
+            except OSError as e:
+                notes.append(f"can't write {path.name}: {e}")
+        for note in notes:
+            if sys.stderr:
+                print(f"TrackXen settings: {note}", file=sys.stderr)
+        cfg._load_notes = notes
+        return cfg
+
+    @classmethod
+    def _read(cls, path: Path, notes: list[str]) -> AppConfig:
+        """Settings as saved (json.dumps); a value refused now goes back to its default, noted."""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for _ in range(500):  # one refused value at a time
+            try:
+                return cls.model_validate(data, context={"notes": notes})
+            except ValidationError as e:
+                for error in e.errors(include_url=False):
+                    if _forget(data, error["loc"]):
+                        notes.append(f"{'.'.join(map(str, error['loc']))}: {error['msg']}; using the default")
+                        break
+                else:
+                    raise
+        raise ValueError("too many values that are not valid")
 
     def save(self, path: Path) -> None:
+        """Write the settings so that a crash or power cut can't leave a damaged file: the new file is on
+        the disk before it replaces the old one, which is kept as settings.json.bak (the last good copy)."""
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.model_dump(), indent=2), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(self.model_dump(), indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        if path.exists():
+            shutil.copyfile(path, path.with_name(path.name + ".bak"))
         tmp.replace(path)
+
+
+def _forget(data, loc: tuple) -> bool:
+    """Remove the saved value at `loc` (the innermost named setting that holds it), so its default is used."""
+    holder, key, node = None, None, data
+    for part in loc:
+        if isinstance(node, dict) and part in node:
+            holder, key, node = node, part, node[part]
+        elif isinstance(node, list) and isinstance(part, int) and 0 <= part < len(node):
+            node = node[part]
+        else:
+            break
+    if holder is None:
+        return False
+    del holder[key]
+    return True
 
 
 def sim_config(cameras: int = 1, ptzoptics: int = 0) -> AppConfig:

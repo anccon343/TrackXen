@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import math
 import time
 from dataclasses import dataclass
 
@@ -41,6 +42,12 @@ STILL_BEFORE_RESUME = 1.0  # s the camera must be still before tracking restarts
 AREA_KINDS = ("priority", "fixed", "auto_select", "exclusion", "halting")
 PRESETS = 128  # VISCA preset numbers 0..127, shown as 1..128
 EDGES = ("left", "right", "top", "bottom")
+
+
+def _finite(*values: float) -> None:
+    """Points and positions from pages and Companion must be numbers (NaN would steer the camera)."""
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("positions must be numbers")
 
 
 @dataclass
@@ -69,6 +76,7 @@ class CameraSession:
         self.tracking = False
         self.no_video = False
         self.target_id: int | None = None
+        self.stale_id = False  # target_id is from an earlier vision worker (ids start at 1 again): find the person afresh
         self.latest: dict | None = None  # newest "tracks" message
         self.people: list[rules.Placed] = []  # its people, placed in room angles
         self.zones: dict[int, str] = {}  # person -> "halting" / "excluded" (can't be picked)
@@ -171,7 +179,8 @@ class CameraSession:
         self.refresh()
 
     def update_slot(self, patch: dict, index: int | None = None) -> AppSettings:
-        """Change App Settings values (validated). Live at once; on disk only after Save."""
+        """Change App Settings values (validated). Live at once; Save writes them to disk (so does any
+        other change that saves the settings: they are part of the running settings)."""
         i = self.cfg.active_slot if index is None else index
         data = self.cfg.slots[i].model_dump()
         merge(data, patch)
@@ -219,13 +228,16 @@ class CameraSession:
         area holds exactly that shot.
         """
         area = self._area(kind, index)
-        if enabled is not None:
-            area.enabled = bool(enabled)
-        if rect is None and area.enabled and not area.view.set:
+        on = area.enabled if enabled is None else bool(enabled)
+        if rect is None and on and not area.view.set:
             rect = [0.3, 0.3, 0.7, 0.7]
-        if rect is not None:
+        placed = None
+        if rect is not None:  # worked out before anything changes: a refused command leaves the area as it was
+            _finite(*rect)
             pose = self.require_pose()
             placed = area_from_view(*rect, pose, self.lens)
+        area.enabled = on
+        if placed is not None:
             area.left, area.right, area.top, area.bottom = placed.left, placed.right, placed.top, placed.bottom
             area.view = View(set=True, pan=pose.pan, tilt=pose.tilt, zoom=pose.zoom)
         self.refresh()
@@ -261,6 +273,10 @@ class CameraSession:
     # --- operator actions ---------------------------------------------------------
 
     def set_tracking(self, on: bool, reason: str = "", start_at_initial: bool = True) -> None:
+        if not on:  # off also cancels what would switch it on again or pick a target by itself
+            if self.move:
+                self.move.then_track = False
+            self.cue = None
         if on == self.tracking:
             return
         self.tracking = on
@@ -277,6 +293,7 @@ class CameraSession:
 
     def select_at(self, x: float, y: float) -> tuple[int | None, str]:
         """Lock onto the person at a point of the picture (0..1 coordinates)."""
+        _finite(x, y)
         msg = self.latest
         if not msg or not msg["tracks"]:
             return None, "nobody in the picture"
@@ -294,11 +311,12 @@ class CameraSession:
         if self.zones.get(pick["id"]) == "halting":
             return None, "that person is inside a tracking halting area"
         self.manual_at = time.monotonic()
+        self.cue = None  # the operator's pick wins over a microphone still waiting for its person
         self.select_id(pick["id"])
         return pick["id"], ""
 
     def select_id(self, track_id: int | None, how: str = "selected") -> None:
-        self.target_id = track_id
+        self.target_id, self.stale_id = track_id, False
         self._forget_person()
         self.selector.reset()
         self.lost_since, self.went_home, self.fixed = None, False, None
@@ -316,7 +334,7 @@ class CameraSession:
         or the connection dropped), tick() stops the camera when the hold runs out.
         """
         if pan or tilt or zoom:
-            self.manual_at = time.monotonic()
+            self.manual_at, self.cue = time.monotonic(), None
         if (pan or tilt or zoom) and self.tracking and not self.slot.restart_after_manual:
             self._manual_operation("moved with the joystick")
         self.move = None
@@ -326,6 +344,7 @@ class CameraSession:
 
     def click_center(self, x: float, y: float) -> None:
         """Canon's Click Centering: turn so this point of the picture (0..1) comes to the middle."""
+        _finite(x, y)
         pose = self.require_pose()
         pan, tilt = view_to_room(x, y, pose, self.lens)
         self.go_to_manually(View(set=True, pan=pan, tilt=tilt, zoom=pose.zoom), "click centering")
@@ -349,7 +368,8 @@ class CameraSession:
 
     def go_to_manually(self, view: View, reason: str) -> None:
         """An operator-requested absolute move; during tracking it counts as a manual operation."""
-        self.manual_at = time.monotonic()
+        _finite(view.pan, view.tilt, view.zoom)
+        self.manual_at, self.cue = time.monotonic(), None
         if self.tracking:
             self._manual_operation(reason)
         self.go_to(view, reason)
@@ -360,6 +380,7 @@ class CameraSession:
         tracking, blank = like any manual operation."""
         if not 1 <= number <= PRESETS:
             raise ValueError(f"preset number must be 1..{PRESETS}")
+        self.manual_at, self.cue = time.monotonic(), None  # the operator framed this camera
         link = self.cfg.preset_links.get(number, PresetLink())
         then_track = link.auto_tracking == "on"
         if link.auto_tracking == "off":
@@ -468,11 +489,11 @@ class CameraSession:
             # Canon: only registered faces (switched on) are picked, the highest priority first, at once
             self.selector.reset()
             pick = self._registered_pick(slot)
-            if pick is not None and pick[0] != self.target_id:
+            if pick is not None and (not self._is_target(pick[0]) or pick[1] != self.target_face):
                 self.select_id(pick[0], f"registered face: {self.face_names.get(pick[1], pick[1])}")
         elif looking and slot.auto_select.enabled:
             pick = self.selector.update(slot, self.people, now)
-            if pick is not None and pick != self.target_id:
+            if pick is not None and not self._is_target(pick):
                 self.select_id(pick, "auto select")
         else:
             self.selector.reset()
@@ -489,8 +510,8 @@ class CameraSession:
         self._event("audio", f"{label or f'mic {channel}'} is speaking: framing them")
         if preset and not slow:
             self.select_id(None, "audio cue")
+            self.set_tracking(False, "audio cue: moving to the preset")  # (first: off drops a pending start)
             self.move = Move(f"preset {preset} for {label or f'mic {channel}'}", None, now, now + 20.0, then_track=True)
-            self.set_tracking(False, "audio cue: moving to the preset")
             self._spawn(self.link.recall_preset(preset - 1), f"preset {preset} recall")
             self.cue = (face, label, now + CUE_TIMEOUT + 20.0, channel)  # plus the move
         elif not self.tracking:
@@ -514,7 +535,7 @@ class CameraSession:
         aim = (pose.pan if pose else 0.0, pose.tilt if pose else 0.0)
         pick = min(candidates, key=lambda p: (p.pan - aim[0]) ** 2 + (p.tilt - aim[1]) ** 2)
         self.cue = None
-        if pick.id != self.target_id:
+        if not self._is_target(pick.id):
             self.select_id(pick.id, f"audio: {label or f'mic {channel}'}")
         return True
 
@@ -525,8 +546,15 @@ class CameraSession:
                  if (face := (p.track.get("face") or {}).get("id")) in order and rules.selectable(slot, p)]
         return (min(found)[1], min(found)[2]) if found else None
 
+    def _is_target(self, track_id: int) -> bool:
+        """Is this track the target? (Not by the number alone after a vision worker restart.)"""
+        return track_id == self.target_id and not self.stale_id
+
     def _follow(self, msg: dict, pose: Pose, captured: float, now: float) -> None:
-        track = next((t for t in msg["tracks"] if t["id"] == self.target_id), None)
+        track = next((t for t in msg["tracks"] if self._is_target(t["id"])), None)
+        face = (track.get("face") or {}).get("id") if track else None
+        if self.target_face and face and face != self.target_face:
+            track = None  # identity lock: the target's track shows someone else now (the tracker swapped IDs)
         if track is None:
             track = self._reacquire(msg, pose, captured)
         if track is None or track["missed"]:
@@ -542,7 +570,7 @@ class CameraSession:
         self._check_fixed(person, slot)
         self.head.update(captured, person.pan, person.tilt)
         face = (track.get("face") or {}).get("id")
-        if face and face != self.target_face:
+        if face and self.target_face is None:
             self.target_face = face
             self._event("target", f"target recognised: {self.face_names.get(face, face)}")
         shot = self.shot = self.framer.shot(slot, person, self.people, self.zones, msg, pose, self.lens, captured)
@@ -564,6 +592,8 @@ class CameraSession:
             self.fixed = None
             self.controller.hold()
             return
+        if self.paused or self._manual_active:
+            return  # the operator has the camera: the area takes the shot once tracking is back
         i = rules.fixed_area_of(slot, person)
         if i is not None:
             self.fixed = i
@@ -587,7 +617,7 @@ class CameraSession:
             if same:
                 self.counts["refinds"] += 1
                 self._event("target", f"target re-found by face as person {same.id} (was {self.target_id})")
-                self.target_id = same.id
+                self.target_id, self.stale_id = same.id, False
                 return same.track
         kalman = self.head
         since = time.monotonic() - self.last_seen
@@ -613,7 +643,7 @@ class CameraSession:
         best = candidates[0][1]
         self.counts["refinds"] += 1
         self._event("target", f"target re-found as person {best['id']} (was {self.target_id})")
-        self.target_id = best["id"]
+        self.target_id, self.stale_id = best["id"], False
         return best
 
     # --- control -------------------------------------------------------------------------
@@ -639,6 +669,7 @@ class CameraSession:
             return
         if self.no_video or pose is None:
             self._send(0, 0, 0)
+            self.controller.hold()  # stopped: start again from standstill, not at the old speed
             return
         if self.target_id is not None and self.lost_since is None and now - self.last_seen > self.cfg.lost_after:
             self.lost_since, self.fixed = now, None
@@ -701,6 +732,7 @@ class CameraSession:
         moved = self._camera_moving(now)
         if moved:
             self.still_since = None
+            self.manual_at = now  # moved by hand (with tracking on or off): audio-follow leaves it alone a while
             if self.tracking and not self.paused:
                 self._manual_operation(f"camera moved by another controller ({moved})")
         elif self.paused:
@@ -734,12 +766,25 @@ class CameraSession:
         if not self.no_video:
             self.counts["watchdog_stops"] += 1
             self.no_video = True
+            self.controller.hold()  # the camera is stopped: motion starts again from standstill
             self._event("video", "no detections arriving: camera stopped", level="error")
 
     def video_resumed(self) -> None:
         if self.no_video:
             self.no_video = False
             self._event("video", "detections arriving again")
+
+    def worker_restarted(self) -> None:
+        """A new vision worker started: its track ids start at 1 again, so the old ids (the target's,
+        and everything kept per person) mean nobody in particular now. The target is found again like
+        a lost one: by its registered face anywhere, or as a new track where it was last seen. The
+        camera itself is left as it is."""
+        if self.target_id is not None:
+            self.stale_id = True
+        self.latest, self.people, self.zones = None, [], {}
+        self.selector.reset()
+        self.framer.reset()
+        self.shot = None
 
     def reset_counts(self) -> None:
         self.counts = dict.fromkeys(self.counts, 0)
