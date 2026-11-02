@@ -789,6 +789,21 @@ third, 411 with a fourth).
 - The registration frame stays on if a device dies mid-registration, until the next vision restart.
 - Restarting only the vMix or mixer link whose address changed; the "(development)" version label.
 
+**Checked end to end in the simulator** (one virtual camera, fake vMix and mixer, Light mode on a
+4-core CPU with no GPU: 4-6 detections/s instead of 15). `sim_scenarios` and `sim_test` were run on the
+code before these fixes and after them, alternating, with the same settings and models.
+- **Passed on both, every time:** auto_select, fixed, range, manual, preset, onair and audio. `sim_test`
+  kept the target in view on both, with similar framing errors.
+- **Failed on both, in the same way:**
+  - **halting** (5/9 before, 4/9 after): at that detection rate the speaker's track number breaks as
+    they walk into the halting area, so the target is "lost" rather than "released".
+  - **multi** (0/3 on both): the camera reaches pan 18-21, but the scenario needs more than 24.
+  - **faces** (0/3 on both): the face guide stays on "face the camera".
+  These failures come from the slow CPU detection, not from code that changed.
+- **No regressions:** no scenario failed after the fixes that passed before.
+- **Logs:** no errors or tracebacks after the fixes. Both versions stopped cleanly on Ctrl+C.
+- **Not checked here:** the scenarios at the full detection rate on the show PC.
+
 ## Audits
 
 - **End of Phase 2:** structure OK. Fixed: camera loops that could die silently; missing Origin check;
