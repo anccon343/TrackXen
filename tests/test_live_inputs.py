@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from trackxen.core.config import AppConfig
 from trackxen.core.live_inputs import LiveInputs
+from trackxen.core.session import IDLE
 from trackxen.integrations.vmix import Tally, VmixInput, VmixLink
 from trackxen.integrations.xair import METERS1_COUNT, MixerLink
 from trackxen.rules.audio import AudioFollowConfig
@@ -25,6 +26,7 @@ class FakeSession:
         self.cfg = SimpleNamespace(id=cam_id, name=cam_id, vmix_input=vmix_input)
         self.on_air_tally, self.on_air_manual = False, None
         self.audio_follow, self.tracking, self.target_face, self.manual_at, self.cue = True, False, None, -1e9, None
+        self.state, self.framing_mic = IDLE, None  # (tracking off: not framing anyone's mic)
         self.cues = []
 
     @property
