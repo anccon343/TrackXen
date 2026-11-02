@@ -1,3 +1,4 @@
+import queue
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -45,9 +46,9 @@ class FakeDetectors:
 
 
 class FakeFrame:
-    def __init__(self, number):
+    def __init__(self, number, size=(4, 4)):
         self.number, self.received, self.measured = number, time.monotonic(), time.perf_counter()
-        self.image = np.full((4, 4, 3), number % 256, np.uint8)
+        self.image = np.full((size[1], size[0], 3), number % 256, np.uint8)
 
 
 class FakeSource:
@@ -73,7 +74,8 @@ def make_loop(cameras: int, detector, pipeline: bool, max_fps: float = 0.0) -> t
     loop.previews = {cam: False for cam in loop.sources}
     loop.max_detect_fps, loop._last_detect, loop._tokens, loop._passed = max_fps, {}, {}, {}
     loop._allowance, loop.faces = set(), None
-    loop._started, loop._next_start_try = set(loop.sources), float("inf")
+    loop._started, loop._starting, loop._start_results = set(loop.sources), {}, queue.SimpleQueue()
+    loop._next_start_try, loop._start_wait, loop._sizes = {}, {}, {}
     loop.detectors, loop.batch = FakeDetectors(detector), 1 if cameras == 1 else 4
     loop.gpu = GpuStage() if pipeline else None
     loop._encoder, loop._encoding = ThreadPoolExecutor(1), set()
@@ -167,3 +169,78 @@ def test_gpu_stage_keeps_order():
         got += stage.collect(wait=0.5)
     assert [j.payload for j in got] == [0, 1, 2, 3, 4] and [j.out for j in got] == [[0], [1], [2], [3], [4]]
     stage.close()
+
+
+class MissingSource(FakeSource):
+    """A camera that is switched off: looking for it takes `seconds`, then fails."""
+
+    def __init__(self, seconds: float):
+        super().__init__()
+        self.seconds, self.tries = seconds, 0
+
+    def start(self, timeout):
+        self.tries += 1
+        time.sleep(self.seconds)
+        raise LookupError("NDI source not found: CAM 2")
+
+
+def wait_for_error(loop: VisionLoop, sent: list, count: int) -> None:
+    deadline = time.monotonic() + 3.0
+    while sum(1 for m in sent if m.get("type") == "error") < count:
+        assert time.monotonic() < deadline, "no error reported"
+        loop.step()
+        time.sleep(0.01)
+
+
+def test_a_missing_source_does_not_hold_up_the_other_cameras():
+    loop, sent = make_loop(2, FakeDetector(), pipeline=False)
+    loop._started = {"cam1"}
+    missing = loop.sources["cam2"] = MissingSource(0.5)
+    t0 = time.monotonic()
+    for number in range(1, 6):
+        loop.sources["cam1"].frame = FakeFrame(number)
+        drain(loop)
+    assert time.monotonic() - t0 < 0.3  # cam1's frames were not held up while cam2 was looked for
+    assert [m["frame"] for m in sent if m.get("type") == "tracks"] == [1, 2, 3, 4, 5]
+    wait_for_error(loop, sent, 1)
+    assert missing.tries == 1 and "not found" in sent[-1]["message"] and sent[-1]["camera"] == "cam2"
+    waits = [loop._next_start_try["cam2"] - time.monotonic()]
+    missing.seconds = 0.0
+    for count in range(2, 7):  # tried again later and later: 5, 10, 20, 40, 60 s
+        loop._next_start_try["cam2"] = 0.0  # (as if that time had passed)
+        wait_for_error(loop, sent, count)
+        waits.append(loop._next_start_try["cam2"] - time.monotonic())
+    assert missing.tries == 6
+    assert [round(w) for w in waits] == [5, 10, 20, 40, 60, 60]
+
+
+def test_a_source_found_later_is_used():
+    loop, sent = make_loop(1, FakeDetector(), pipeline=False)
+    loop._started = set()
+    source = loop.sources["cam1"]
+    source.start = lambda timeout: None
+    deadline = time.monotonic() + 2.0
+    while "cam1" not in loop._started:
+        assert time.monotonic() < deadline
+        loop.step()
+        time.sleep(0.001)
+    source.frame = FakeFrame(1)
+    drain(loop)
+    assert [m["frame"] for m in sent if m.get("type") == "tracks"] == [1]
+    assert not any(m.get("type") == "error" for m in sent)
+
+
+def test_new_picture_size_rescales_the_tracker():
+    class Tracker(FakeTracker):
+        def __init__(self):
+            self.scaled = []
+
+        def rescale(self, sx, sy):
+            self.scaled.append((sx, sy))
+
+    loop, _ = make_loop(1, FakeDetector(), pipeline=False)
+    tracker = loop.trackers["cam1"] = Tracker()
+    for number, size in enumerate([(1920, 1080), (1920, 1080), (1280, 720), (1280, 720)], start=1):
+        loop.sources["cam1"].frame = FakeFrame(number, size)
+        drain(loop)
+    assert tracker.scaled == [(1280 / 1920, 720 / 1080)]

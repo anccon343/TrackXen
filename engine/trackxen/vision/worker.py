@@ -84,7 +84,9 @@ class Detectors:
 
         def make(model: Path, engines: tuple[str, ...]):
             cache = Path(cfg.cache_dir) if cfg.cache_dir else Path(cfg.model_dir) / "trt-cache"
-            return PoseDetector(model, cache_dir=cache, engines=engines, conf=cfg.conf)
+            return PoseDetector(model, cache_dir=cache, engines=engines, conf=self.conf)
+
+        self.conf = cfg.conf  # the detectors' threshold (VisionLoop lowers it for Advanced mode)
 
         sizes = sorted({1, batch})
         self.models = {n: Path(cfg.model_dir) / f"{cfg.model_name}-b{n}.onnx" for n in sizes}
@@ -116,7 +118,9 @@ class Detectors:
         """The detector for this many frames (the single-frame one for one frame)."""
         if self._next is not None:
             self.current, self._next = self._next, None
-        return self.current[1] if frames == 1 else self.current[max(self.current)]
+        detector = self.current[1] if frames == 1 else self.current[max(self.current)]
+        detector.conf = self.conf
+        return detector
 
 
 class VisionLoop:
@@ -141,26 +145,59 @@ class VisionLoop:
         self._encoder = ThreadPoolExecutor(max_workers=2, thread_name_prefix="preview")
         self._encoding: set[str] = set()
         self._started: set[str] = set()
-        self._next_start_try = 0.0
+        self._starting: dict[str, threading.Thread] = {}  # sources being opened right now
+        self._start_results: queue.SimpleQueue[tuple[str, Exception | None]] = queue.SimpleQueue()
+        self._next_start_try: dict[str, float] = {}
+        self._start_wait: dict[str, float] = {}  # seconds until the next try, per missing source
+        self._sizes: dict[str, tuple[int, int]] = {}  # picture size per camera (width, height)
         batch = 1 if len(self.sources) <= 1 else 4
         self.detectors = Detectors(cfg, batch, emit)
+        self.detectors.conf = self._detect_conf()
         self.batch = batch
         self.gpu = GpuStage() if cfg.pipeline else None
 
     def start_sources(self) -> None:
-        """(Re)try opening sources that aren't running yet (a camera may come online later)."""
-        now = time.monotonic()
-        if now < self._next_start_try:
-            return
-        self._next_start_try = now + 5.0
-        for cam, src in self.sources.items():
-            if cam in self._started:
-                continue
+        """(Re)try opening sources that aren't running yet (a camera may come online later).
+
+        Each try runs on a thread of its own: finding an NDI source or opening a capture device
+        takes up to seconds, and the other cameras' detection must not wait for it (the core stops
+        a tracking camera after half a second without results). A source that stays missing is
+        tried again after 5 s, then 10, 20, 40 and every 60 s."""
+        while True:
             try:
-                src.start(timeout=2.0)
+                cam, error = self._start_results.get_nowait()
+            except queue.Empty:
+                break
+            self._starting.pop(cam, None)
+            if error is None:
                 self._started.add(cam)
-            except Exception as e:  # noqa: BLE001 - report and retry later
-                self.emit({"type": "error", "camera": cam, "message": str(e)})
+                self._start_wait.pop(cam, None)
+                continue
+            wait = min(60.0, self._start_wait.get(cam, 2.5) * 2)
+            self._start_wait[cam] = wait
+            self._next_start_try[cam] = time.monotonic() + wait
+            self.emit({"type": "error", "camera": cam, "message": str(error)})
+        now = time.monotonic()
+        for cam in self.sources:
+            if cam in self._started or cam in self._starting or now < self._next_start_try.get(cam, 0.0):
+                continue
+            thread = threading.Thread(target=self._start_source, args=(cam,), name=f"start:{cam}", daemon=True)
+            self._starting[cam] = thread
+            thread.start()
+
+    def _start_source(self, cam: str) -> None:
+        """Thread: open one source; start_sources picks up the result."""
+        try:
+            self.sources[cam].start(timeout=2.0)
+        except Exception as e:  # noqa: BLE001 - reported, and tried again later
+            self._start_results.put((cam, e))
+        else:
+            self._start_results.put((cam, None))
+
+    def _detect_conf(self) -> float:
+        """The detectors' threshold: the usual one, or lower when Advanced mode lets the tracker use
+        weaker detections (they would never reach it otherwise)."""
+        return min([self.cfg.conf] + [min(t.low_score, t.high_score) for t in self.trackers.values()])
 
     def command(self, msg: dict) -> bool:
         """Apply a command; returns False when the worker should stop."""
@@ -176,27 +213,32 @@ class VisionLoop:
                 for key, value in msg["settings"].items():
                     if hasattr(tracker, key):
                         setattr(tracker, key, value)
+            self.detectors.conf = self._detect_conf()
         elif kind in ("faces", "face_guide", "face_capture"):
             self._face_command(msg)
         return True
 
     def _face_command(self, msg: dict) -> None:
-        if self.faces is None:
+        if self.faces is None or self.faces.failed:  # (after a failure again: the model files may be fixed)
             models = Path(self.cfg.model_dir)
             if not faces.available(models):
                 self.emit({"type": "error", "message": "face models missing: run tools/get_face_models.py"})
                 return
-            self.faces = faces.FaceWorker(models, self.emit)
+            old, self.faces = self.faces, faces.FaceWorker(models, self.emit)
+            if old:
+                self.faces.gallery, self.faces.guides = old.gallery, old.guides
         kind = msg["type"]
         if kind == "faces":
             self.faces.set_gallery(msg["gallery"])
-        elif kind == "face_guide":
-            if msg["on"]:
-                self.faces.guides.setdefault(msg["camera"], 0)
+            return
+        with self.faces.lock:  # (the face thread takes a capture under it)
+            if kind == "face_guide":
+                if msg["on"]:
+                    self.faces.guides.setdefault(msg["camera"], 0)
+                else:
+                    self.faces.guides.pop(msg["camera"], None)
             else:
-                self.faces.guides.pop(msg["camera"], None)
-        else:
-            self.faces.guides[msg["camera"]] = int(msg["capture"])
+                self.faces.guides[msg["camera"]] = int(msg["capture"])
 
     def _allowed(self, cam: str, now: float) -> bool:
         """Per-camera token bucket for max_detect_fps: the average rate stays at the limit, but a
@@ -284,8 +326,12 @@ class VisionLoop:
         timing = {"pre_ms": round(job.batch.pre_ms, 3), "infer_ms": round(job.infer_ms, 3),
                   "post_ms": round((time.perf_counter() - t0) * 1000, 3)}
         for (cam, frame, skipped), found in zip(job.payload, people):
-            tracks = self.trackers[cam].update(found, frame.received)
             h, w = frame.image.shape[:2]
+            old = self._sizes.get(cam)
+            if old and old != (w, h):  # the source switched resolution: keep the IDs, in the new pixels
+                self.trackers[cam].rescale(w / old[0], h / old[1])
+            self._sizes[cam] = (w, h)
+            tracks = self.trackers[cam].update(found, frame.received)
             if self.faces:
                 self.faces.submit(cam, frame.image, tracks, time.monotonic())
             self.emit({"type": "tracks", "camera": cam, "frame": frame.number, "t_frame": frame.received,
@@ -350,6 +396,8 @@ class VisionLoop:
     def close(self) -> None:
         if self.gpu:
             self.gpu.close()
+        for thread in list(self._starting.values()):  # let sources being opened finish, then stop them too
+            thread.join(timeout=3.0)
         for src in self.sources.values():
             try:
                 src.stop()

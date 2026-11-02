@@ -38,10 +38,11 @@ def nms(boxes: np.ndarray, scores: np.ndarray, iou: float) -> list[int]:
     tracker uses (0.1) it sometimes reports a second, nearly identical box for one person (IoU
     0.9+, measured in the simulator), which would become a duplicate track.
     """
-    order = list(np.argsort(-scores))
     ious = iou_matrix(boxes, boxes)
+    dropped = np.zeros(len(boxes), dtype=bool)
     keep: list[int] = []
-    for i in order:
-        if all(ious[i, k] <= iou for k in keep):
+    for i in np.argsort(-scores):  # (one numpy step per kept box: up to 300 rows at a low threshold)
+        if not dropped[i]:
             keep.append(int(i))
+            dropped |= ious[i] > iou
     return keep

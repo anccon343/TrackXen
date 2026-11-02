@@ -38,10 +38,14 @@ class Job:
     crop: np.ndarray  # BGR
     track_id: int = 0
     capture: int = 0  # guide jobs: a capture request number (0 = only check the quality)
+    near: tuple[float, float, float] | None = None  # identify jobs: the person's head in the crop (head_view)
 
 
-def head_crop(image: np.ndarray, box: list[float], keypoints: list[list[float]]) -> np.ndarray | None:
-    """A square around the head: from the face keypoints when seen, else the top of the box."""
+def head_view(image: np.ndarray, box: list[float],
+              keypoints: list[list[float]]) -> tuple[np.ndarray, tuple[float, float, float]] | None:
+    """A square around the head: from the face keypoints when seen, else the top of the box.
+    Returns the crop and where the head is in it: x, y of its centre (off the crop's centre when
+    the square was cut at the picture's edge) and the square's side. None when too small."""
     h, w = image.shape[:2]
     face = [(x, y) for x, y, c in keypoints[:5] if c >= 0.3]
     x1, y1, x2, y2 = box
@@ -56,7 +60,13 @@ def head_crop(image: np.ndarray, box: list[float], keypoints: list[list[float]])
     right, bottom = int(min(w, cx + half)), int(min(h, cy + half))
     if right - left < MIN_FACE_PX or bottom - top < MIN_FACE_PX:
         return None
-    return image[top:bottom, left:right].copy()
+    return image[top:bottom, left:right].copy(), (cx - left, cy - top, size)
+
+
+def head_crop(image: np.ndarray, box: list[float], keypoints: list[list[float]]) -> np.ndarray | None:
+    """Just the crop of head_view."""
+    view = head_view(image, box, keypoints)
+    return None if view is None else view[0]
 
 
 def guide_crop(image: np.ndarray) -> np.ndarray:
@@ -73,17 +83,26 @@ class FaceEngine:
         self.detector = cv2.FaceDetectorYN.create(str(models / YUNET), "", (160, 160), 0.7, 0.3, 20)
         self.recognizer = cv2.FaceRecognizerSF.create(str(models / SFACE), "")
 
-    def find(self, crop: np.ndarray) -> np.ndarray | None:
-        """The biggest face in the crop (YuNet row: box, 5 landmarks, score), small crops enlarged."""
+    def find(self, crop: np.ndarray, near: tuple[float, float, float] | None = None) -> np.ndarray | None:
+        """The biggest face in the crop (YuNet row: box, 5 landmarks, score), small crops enlarged.
+
+        With `near` (x, y, size: where a person's head is in their head crop), the face nearest
+        that point instead, and none if even that one is more than a quarter of `size` away: a
+        neighbour's face at the edge of the crop of someone facing away is not theirs."""
         scale = 2.0 if max(crop.shape[:2]) < 160 else 1.0
         img = cv2.resize(crop, None, fx=scale, fy=scale) if scale != 1.0 else crop
         self.detector.setInputSize((img.shape[1], img.shape[0]))
         _, faces = self.detector.detect(img)
         if faces is None or not len(faces):
             return None
-        face = max(faces, key=lambda f: f[2] * f[3]).copy()
-        face[:14] /= scale
-        return face
+        faces = np.array(faces, dtype=np.float32)
+        faces[:, :14] /= scale
+        if near is None:
+            return max(faces, key=lambda f: f[2] * f[3])
+        x, y, size = near
+        off = np.hypot(faces[:, 0] + faces[:, 2] / 2 - x, faces[:, 1] + faces[:, 3] / 2 - y)
+        nearest = int(np.argmin(off))
+        return faces[nearest] if off[nearest] <= size * 0.25 else None
 
     def fingerprint(self, crop: np.ndarray, face: np.ndarray) -> np.ndarray:
         feature = self.recognizer.feature(self.recognizer.alignCrop(crop, face)).reshape(-1)
@@ -128,6 +147,8 @@ class FaceWorker:
         self.identities: dict[tuple[str, int], tuple[str, float, float]] = {}  # (camera, track) -> id, score, when
         self.checked: dict[tuple[str, int], float] = {}
         self.guides: dict[str, int] = {}  # camera -> pending capture number (0 = only checking)
+        self.lock = threading.Lock()  # for `guides`: the face thread takes a capture, the loop opens and closes
+        self.failed = False  # the models couldn't be loaded: the thread has ended
         self._last_guide: dict[str, float] = {}
         self._thread = threading.Thread(target=self._run, name="faces", daemon=True)
         self._thread.start()
@@ -138,6 +159,8 @@ class FaceWorker:
 
     def submit(self, camera: str, image: np.ndarray, tracks: list, now: float) -> None:
         """Called by the detection loop after each frame: queue the faces that are due a look."""
+        if self.failed:
+            return
         if camera in self.guides and now - self._last_guide.get(camera, 0.0) >= 0.2:
             self._last_guide[camera] = now
             self._put(Job("guide", camera, guide_crop(image), capture=self.guides[camera]))
@@ -150,10 +173,10 @@ class FaceWorker:
         due = sorted((t for t in tracks if t.missed == 0 and now - self.checked.get((camera, t.id), 0.0) >= RECHECK_S),
                      key=lambda t: self.checked.get((camera, t.id), 0.0))
         for t in due[:2]:  # at most two people per frame and camera
-            crop = head_crop(image, t.box, t.keypoints)
+            view = head_view(image, t.box, t.keypoints)
             self.checked[(camera, t.id)] = now
-            if crop is not None:
-                self._put(Job("identify", camera, crop, track_id=t.id))
+            if view is not None:
+                self._put(Job("identify", camera, view[0], track_id=t.id, near=view[1]))
 
     def identity(self, camera: str, track_id: int) -> dict | None:
         found = self.identities.get((camera, track_id))
@@ -166,7 +189,12 @@ class FaceWorker:
             pass  # the face thread is busy: these people are looked at next time
 
     def _run(self) -> None:
-        engine = FaceEngine(self.models)
+        try:
+            engine = FaceEngine(self.models)
+        except Exception as e:  # noqa: BLE001 - e.g. a damaged model file: say so (the next face command tries again)
+            self.failed = True
+            self.emit({"type": "error", "message": f"face recognition unavailable: {str(e).strip().splitlines()[0][:300]}"})
+            return
         while True:
             job = self.jobs.get()
             try:
@@ -178,7 +206,7 @@ class FaceWorker:
                 self.emit({"type": "error", "camera": job.camera, "message": f"face recognition: {e}"})
 
     def _identify(self, engine: FaceEngine, job: Job) -> None:
-        face = engine.find(job.crop)
+        face = engine.find(job.crop, job.near)
         if face is None or face[2] < MIN_FACE_PX or not self.gallery:
             return
         mine = engine.fingerprint(job.crop, face)
@@ -195,12 +223,16 @@ class FaceWorker:
         problem = engine.quality(job.crop, face)
         box = None if face is None else [round(float(v) / job.crop.shape[0], 3) for v in face[:4]]
         self.emit({"type": "face_guide", "camera": job.camera, "ok": not problem, "problem": problem, "box": box})
-        if job.capture and not problem and self.guides.get(job.camera) == job.capture:
-            x, y, w, h = (int(v) for v in face[:4])
-            pad = int(w * 0.3)
-            thumb = job.crop[max(0, y - pad):y + h + pad, max(0, x - pad):x + w + pad]
-            thumb = cv2.resize(thumb, (96, 96 * thumb.shape[0] // max(thumb.shape[1], 1)))
-            ok, jpeg = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not job.capture or problem:
+            return
+        with self.lock:  # take the capture first: a frame closed meanwhile stays closed
+            if self.guides.get(job.camera) != job.capture:
+                return
             self.guides[job.camera] = 0
-            self.emit({"type": "face_captured", "camera": job.camera, "capture": job.capture,
-                       "feature": engine.fingerprint(job.crop, face).tolist(), "jpeg": jpeg.tobytes() if ok else b""})
+        x, y, w, h = (int(v) for v in face[:4])
+        pad = int(w * 0.3)
+        thumb = job.crop[max(0, y - pad):y + h + pad, max(0, x - pad):x + w + pad]
+        thumb = cv2.resize(thumb, (96, 96 * thumb.shape[0] // max(thumb.shape[1], 1)))
+        ok, jpeg = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        self.emit({"type": "face_captured", "camera": job.camera, "capture": job.capture,
+                   "feature": engine.fingerprint(job.crop, face).tolist(), "jpeg": jpeg.tobytes() if ok else b""})

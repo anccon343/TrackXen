@@ -89,6 +89,130 @@ def test_head_crop_follows_the_face_keypoints():
     assert crop is not None and 60 <= crop.shape[0] <= 130 and crop.shape[0] == crop.shape[1]
 
 
+def face_row(x, y, w, h, score=0.95):
+    """A YuNet result row: box, right eye, left eye, nose, mouth corners, score (a frontal face)."""
+    return [x, y, w, h, x + 0.3 * w, y + 0.4 * h, x + 0.7 * w, y + 0.4 * h, x + 0.5 * w, y + 0.6 * h,
+            x + 0.35 * w, y + 0.8 * h, x + 0.65 * w, y + 0.8 * h, score]
+
+
+class FakeYuNet:
+    """cv2.FaceDetectorYN's interface: always finds these faces (crops of 160 px and more: not enlarged)."""
+
+    def __init__(self, rows):
+        self.rows = np.array(rows, np.float32).reshape(-1, 15)
+
+    def setInputSize(self, size):
+        pass
+
+    def detect(self, img):
+        return 1, (self.rows.copy() if len(self.rows) else None)
+
+
+class FakeSFace:
+    """cv2.FaceRecognizerSF's interface: each face's fingerprint is looked up by its x in the crop."""
+
+    def __init__(self, prints):
+        self.prints = prints
+
+    def alignCrop(self, crop, face):
+        return face
+
+    def feature(self, face):
+        return np.asarray(self.prints.get(int(round(face[0])), [0.0] * 128), np.float32).reshape(1, -1)
+
+
+def one_hot(i):
+    v = [0.0] * 128
+    v[i] = 1.0
+    return v
+
+
+FaceEngine = faces.FaceEngine
+
+
+def face_worker(monkeypatch, rows, prints=None):
+    engine = FaceEngine.__new__(FaceEngine)  # YuNet and SFace stand-ins, the real logic
+    engine.detector, engine.recognizer = FakeYuNet(rows), FakeSFace(prints or {})
+    monkeypatch.setattr(faces, "FaceEngine", lambda models: engine)
+    sent = []
+    return sent, faces.FaceWorker(MODELS, sent.append), engine
+
+
+def settle(worker, sent):
+    """Wait until the face thread has done every job queued so far."""
+    done = sum(m["type"] == "face_guide" for m in sent)
+    worker._put(faces.Job("guide", "sync", np.full((200, 200, 3), 128, np.uint8)))
+    deadline = time.monotonic() + 5.0
+    while sum(m["type"] == "face_guide" for m in sent) <= done:
+        assert time.monotonic() < deadline, "face thread stuck"
+        time.sleep(0.005)
+
+
+def test_a_neighbours_face_at_the_edge_of_the_head_crop_is_not_taken(monkeypatch):
+    from trackxen.vision.tracker import TrackOut
+
+    image = np.zeros((1080, 1920, 3), np.uint8)
+    gallery = [{"id": "A", "feature": one_hot(0)}, {"id": "B", "feature": one_hot(1)}]
+    # A faces away (no face keypoints): the crop is the top of A's box, 180 px square; only B's face
+    # is in it, at its edge
+    sent, worker, _ = face_worker(monkeypatch, [face_row(120, 40, 60, 70)], {120: one_hot(1)})
+    worker.set_gallery(gallery)
+    away = TrackOut(1, [400, 200, 600, 800], 0.9, [[0, 0, 0]] * 17, (0, 0), 0, 1.0)
+    worker.submit("cam1", image, [away], 1.0)
+    settle(worker, sent)
+    assert worker.identity("cam1", 1) is None
+    # A faces the camera: A's face in the middle of the crop, B's bigger one at its edge
+    sent, worker, _ = face_worker(monkeypatch, [face_row(71, 70, 50, 60), face_row(140, 50, 52, 80)],
+                                  {71: one_hot(0), 140: one_hot(1)})
+    worker.set_gallery(gallery)
+    kp = [[500, 260, 0.9], [485, 250, 0.9], [515, 250, 0.9], [460, 255, 0.9], [540, 255, 0.9]] + [[0, 0, 0]] * 12
+    facing = TrackOut(1, [400, 200, 600, 800], 0.9, kp, (0, 0), 0, 1.0)
+    worker.submit("cam1", image, [facing], 1.0)
+    settle(worker, sent)
+    assert worker.identity("cam1", 1)["id"] == "A"
+
+
+def test_closing_the_registration_frame_during_a_capture_keeps_it_closed(monkeypatch):
+    import cv2
+
+    from trackxen.vision.worker import VisionLoop
+
+    sent, worker, engine = face_worker(monkeypatch, [face_row(60, 60, 80, 80)], {60: one_hot(0)})
+    loop = VisionLoop.__new__(VisionLoop)  # just its face commands
+    loop.faces, loop.emit = worker, sent.append
+    loop._face_command({"type": "face_guide", "camera": "cam1", "on": True})
+    loop._face_command({"type": "face_capture", "camera": "cam1", "capture": 3})
+    encode = cv2.imencode
+
+    def closed_meanwhile(*args):  # the operator closes the frame while the face thread is busy
+        loop._face_command({"type": "face_guide", "camera": "cam1", "on": False})
+        return encode(*args)
+
+    monkeypatch.setattr(cv2, "imencode", closed_meanwhile)
+    worker._guide(engine, faces.Job("guide", "cam1", np.full((200, 200, 3), 128, np.uint8), capture=3))
+    assert [m["capture"] for m in sent if m["type"] == "face_captured"] == [3]
+    assert worker.guides == {}  # no registration frame left switched on
+
+
+def test_damaged_face_models_are_reported_and_tried_again(tmp_path):
+    from trackxen.vision.worker import VisionLoop, WorkerConfig
+
+    for name in (faces.YUNET, faces.SFACE):
+        (tmp_path / name).write_bytes(bytes(range(256)) * 4)  # not a model
+    sent = []
+    loop = VisionLoop.__new__(VisionLoop)  # just its face commands
+    loop.cfg, loop.emit, loop.faces = WorkerConfig(sources=[], model_dir=str(tmp_path)), sent.append, None
+    loop._face_command({"type": "faces", "gallery": [{"id": "A", "feature": one_hot(0)}]})
+    first = loop.faces
+    first._thread.join(timeout=5.0)
+    errors = [m["message"] for m in sent if m["type"] == "error"]
+    assert first.failed and len(errors) == 1 and errors[0].startswith("face recognition unavailable")
+    loop._face_command({"type": "face_guide", "camera": "cam1", "on": True})  # tried again
+    assert loop.faces is not first and loop.faces.gallery == first.gallery and loop.faces.guides == {"cam1": 0}
+    loop.faces._thread.join(timeout=5.0)
+    assert sum(m["type"] == "error" for m in sent) == 2
+
+
 @pytest.mark.skipif(not faces.available(MODELS), reason="face models not downloaded (tools/get_face_models.py)")
 def test_same_face_matches_and_another_does_not():
     import cv2

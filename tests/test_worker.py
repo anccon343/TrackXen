@@ -45,3 +45,73 @@ def test_video_sources_by_kind():
     capture = open_source(SourceConfig("cam2", "capture", "3"))
     assert isinstance(capture, CaptureSource) and capture.index == 3 and capture.source_name == "capture device 3"
     assert type(open_source(SourceConfig("cam3", "file", "x.mp4"))) is FileSource
+
+
+def test_weaker_keep_tracking_setting_lowers_the_detector_threshold(tmp_path):
+    import numpy as np
+
+    from test_yolo_pose import synthetic_model
+    from trackxen.vision.sources import SourceConfig
+    from trackxen.vision.worker import WorkerConfig
+    from trackxen.vision.yolo_pose import Batch, Letterbox
+
+    synthetic_model(tmp_path / "synthetic-b1.onnx")
+    cfg = WorkerConfig(sources=[SourceConfig("cam1", "file", str(tmp_path / "none.mp4"))], model_dir=str(tmp_path),
+                       model_name="synthetic", engines=("cpu",), pipeline=False, tracker={"low_score": 0.05})
+    loop = VisionLoop(cfg, lambda msg: None)
+    try:
+        out = np.zeros((1, 300, 57), np.float32)
+        out[0, 0, :6] = [100, 100, 200, 400, 0.08, 0]  # someone the detector is only 8% sure of
+        batch = Batch(out, (Letterbox(1.0, 0, 0),), 1, 0.0)
+        assert len(loop.detectors.get().decode(batch, out)[0]) == 1  # "Keep tracking down to" 0.05
+        loop.command({"type": "tracker", "settings": {"low_score": 0.1}})  # changed live
+        assert loop.detectors.get().conf == 0.1 and loop.detectors.get().decode(batch, out)[0] == []
+        loop.command({"type": "tracker", "settings": {"low_score": 0.4, "high_score": 0.06}})
+        assert loop.detectors.get().conf == 0.06  # sure detections count even below "keep"
+    finally:
+        loop.close()
+
+
+def stream_error(source) -> str:
+    """Start a network stream source and return the first error it reports."""
+    import time
+
+    source.start()
+    try:
+        deadline = time.monotonic() + 10.0
+        while not source.last_error:
+            assert time.monotonic() < deadline, "no error reported"
+            time.sleep(0.02)
+        time.sleep(0.1)
+        assert source._thread.is_alive()  # still trying: it reconnects
+        return source.last_error
+    finally:
+        source.stop()
+
+
+def test_stream_without_video_is_reported_and_retried(tmp_path):
+    import wave
+
+    from trackxen.vision.sources import StreamSource
+
+    path = tmp_path / "audio.wav"  # opens fine, but has no picture
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\0\0" * 800)
+    assert "no video" in stream_error(StreamSource(str(path), loop=True))
+
+
+def test_stream_errors_never_show_the_password():
+    import socket
+
+    from trackxen.vision.sources import StreamSource
+
+    with socket.socket() as s:  # a port nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    source = StreamSource(f"rtsp://admin:secret@127.0.0.1:{port}/1", timeout=2.0)
+    assert source.source_name == f"rtsp://127.0.0.1:{port}/1"
+    error = stream_error(source)
+    assert f"127.0.0.1:{port}" in error and "secret" not in error and "admin" not in error
