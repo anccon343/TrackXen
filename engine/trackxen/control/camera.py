@@ -90,8 +90,8 @@ class CameraLink:
         if self.cfg.freed_port:
             remote = getattr(self.visca, "_remote", None)
             try:
-                self._freed_ip = remote[0] if remote else udp.resolve(self.cfg.host)
-            except OSError:
+                self._freed_ip = remote[0] if remote else await udp.resolve_async(self.cfg.host)
+            except (OSError, ValueError):  # (UnicodeError for a typo such as '192.168.1..60')
                 self._freed_ip = None  # unknown: FreeD from any sender
             try:
                 self._freed_transport = await freed.listen(self.cfg.freed_port, self._on_freed,
