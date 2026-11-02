@@ -250,6 +250,122 @@ def test_close_sends_a_lost_stop_again():
     asyncio.run(run())
 
 
+def busy_for(cam: FakeCamera, seconds: float) -> list:
+    """From now on, for `seconds`, the camera refuses every command with "buffer full" (an error on socket 0, at
+    once) and keeps driving as it was; returns the refused messages."""
+    refused, handle, until = [], cam._handle, time.monotonic() + seconds
+
+    def busy(msg, addr, seq):
+        if msg[1] == 0x01 and time.monotonic() < until:
+            refused.append(msg)
+            cam._reply(addr, visca.PT_REPLY, b"\x90\x60\x03\xff", seq)
+            return
+        handle(msg, addr, seq)
+
+    cam._handle = busy
+    return refused
+
+
+def test_close_sends_a_refused_stop_again_until_the_camera_takes_it():
+    """A busy camera refuses the stop for a while (buffer full), not just once: close() must not use up its
+    tries within a millisecond, or the camera keeps turning and zooming with nothing left to stop it."""
+    async def run():
+        cam = FakeCamera(**ptzoptics_settings())
+        link = ptz_link(await cam.start("127.0.0.1", 0))
+        await link.start()
+        closed = False
+        try:
+            link.request(10, 0, 2)
+            assert await wait_for(lambda: cam.state.pan_rate > 0 and cam.state.zoom_rate > 0)
+            refused = busy_for(cam, 0.05)
+            await link.close()
+            closed = True
+            assert 1 <= len(refused) <= 2  # (tried again a little later, not hammered)
+            assert cam.state.pan_rate == 0.0 and cam.state.zoom_rate == 0.0
+            assert not [e for e in link.log.events if e[2] == "error"]  # (it was taken in the end)
+        finally:
+            if not closed:
+                await link.close()
+            cam.stop()
+
+    asyncio.run(run())
+
+
+def test_close_logs_a_camera_it_could_not_stop():
+    """A camera that never takes the stop is left moving: the log must say so (STOP ALL and the watchdog log
+    theirs), and closing still ends within a few seconds."""
+    async def run():
+        cam = FakeCamera(**ptzoptics_settings())
+        link = ptz_link(await cam.start("127.0.0.1", 0))
+        await link.start()
+        try:
+            link.request(10, 0)
+            assert await wait_for(lambda: cam.state.pan_rate > 0)
+            busy_for(cam, 60.0)
+            t0 = time.monotonic()
+            await link.close()
+            assert time.monotonic() - t0 < 2.5
+            assert [e for e in link.log.events if e[2] == "error" and "stop not acknowledged" in e[1]]
+        finally:
+            cam.stop()
+
+    asyncio.run(run())
+
+
+def test_closing_a_link_that_was_never_opened_is_quick_and_quiet():
+    """A camera without an address in Settings has a link that is never started: closing it (every Apply) has
+    nothing to stop and must not wait or log."""
+    async def run():
+        link = ptz_link(free_udp_port())
+        t0 = time.monotonic()
+        await link.close()
+        assert time.monotonic() - t0 < 0.1 and not link.log.events
+
+    asyncio.run(run())
+
+
+def test_close_right_after_the_tcp_connection_dropped_still_stops_the_camera():
+    """The camera's TCP connection drops while it pans (it keeps panning) and the link hasn't reconnected yet
+    when TrackXen quits: close() connects again and sends the stop, instead of failing "not connected"."""
+    async def run():
+        pan_dirs, connections = [], []
+
+        async def camera(reader, writer):
+            connections.append(writer)
+            try:
+                while data := await reader.read(64):
+                    for msg in visca.split_messages(data):
+                        if msg[1:4] == DRIVE:
+                            pan_dirs.append(msg[6])
+                        writer.write(tcp_camera_reply(msg))
+                    await writer.drain()
+            except OSError:
+                pass
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(camera, "127.0.0.1", 0)
+        link = CameraLink("cam3", CameraLinkConfig(host="127.0.0.1", visca_port=server.sockets[0].getsockname()[1],
+                                                   transport="tcp"), log=Log())
+        await link.start()
+        closed = False
+        try:
+            link.request(10, 0)
+            assert await wait_for(lambda: pan_dirs and pan_dirs[-1] == 2)  # panning right
+            connections[-1].close()  # the connection drops; the camera keeps panning
+            assert await wait_for(lambda: link.visca._writer is None, 1.0)
+            await link.close()
+            closed = True
+            assert pan_dirs[-1] == 3  # stopped
+            assert await wait_for(lambda: all(c.is_closing() for c in connections), 1.0)  # and nothing left open
+        finally:
+            if not closed:
+                await link.close()
+            server.close()
+
+    asyncio.run(run())
+
+
 class MirroredCamera(FakeCamera):
     """A camera whose VISCA pan runs against its picture and FreeD: "right" turns it left, and its VISCA
     positions count to the left (what pan_sign -1 is for)."""

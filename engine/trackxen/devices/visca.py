@@ -301,6 +301,11 @@ class ViscaClient:
             self._transport.close()
             self._transport = None
 
+    @property
+    def connected(self) -> bool:
+        """Can commands be sent? (Not before connect(), after close(), or once a TCP connection dropped.)"""
+        return self._transport is not None
+
     async def __aenter__(self) -> ViscaClient:
         await self.connect()
         return self
@@ -448,6 +453,10 @@ class ViscaTcpClient(ViscaClient):
         if self._writer:
             self._writer.close()
             self._writer = None
+
+    @property
+    def connected(self) -> bool:
+        return self._writer is not None
 
     def _send(self, payload_type: int, msg: bytes) -> None:
         if not self._writer:

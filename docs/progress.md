@@ -557,11 +557,16 @@ third).
   whose ACK was lost kept the camera turning at 11.5 °/s in the test.
   - Found in a third review: quitting TrackXen, or removing a camera in Settings, sent its stop only
     once, so a lost or refused stop left the camera turning and zooming with nothing left to stop it.
-    That stop is now tried up to 3 times. Quitting also closed the cameras one after another once the
-    control loop had ended, so each camera that didn't answer kept the next one moving 0.5-1.5 s
-    longer. All cameras are now stopped at once, and vMix and the mixer are closed first, so no
-    microphone starts a camera meanwhile. With a camera that doesn't answer, quitting takes up to
-    about 2.5 s.
+    That stop is now sent again for 1.5 s after a failed try, at most every 0.1 s. Quitting also closed
+    the cameras one after another once the control loop had ended, so each camera that didn't answer
+    kept the next one moving 0.5-1.5 s longer. All cameras are now stopped at once, and vMix and the
+    mixer are closed first, so no microphone starts a camera meanwhile. With a camera that doesn't
+    answer, quitting takes up to about 3.5 s.
+  - Found in a fourth review: the third review's 3 tries went out within a millisecond, so a camera
+    busy for a moment ("command buffer full") refused all of them, and a TCP connection that had just
+    dropped failed all of them at once. Hence the 1.5 s above; a dropped TCP connection is made again
+    for the stop. A camera that never takes it is logged: "stop not acknowledged on closing, the
+    camera may still be moving". Before, nothing was logged.
 - **Slow corrections:** an axis whose wanted speed rounds to step 0 now settles inside the dead zone,
   or moves at the slowest step outside it. Before, it could stay "moving" at step 0 for good, which
   also blocked Display Size and Auto Zoom (46 of 288 simulated latency cases; 0 now).

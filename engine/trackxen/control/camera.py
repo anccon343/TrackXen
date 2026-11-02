@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from trackxen.devices import freed, udp, visca
 
 POSE_MAX_AGE = 2.0  # s: an older position is not the camera's position now (FreeD and inquiries both stopped)
-CLOSE_STOP_TRIES = 3  # close() sends the stop up to this many times until the camera acknowledges it
+CLOSE_STOP_RETRY = 1.5  # s: close() sends a stop that failed again for this long, until the camera takes it
+CLOSE_STOP_GAP = 0.1  # s: ... at most this often (a busy camera refuses commands for a while: buffer full)
 
 
 @dataclass(frozen=True)
@@ -112,14 +113,36 @@ class CameraLink:
             raise error
 
     async def close(self) -> None:
+        """Stop the camera, then close the connections. Nothing stops this camera afterwards, so a stop that is
+        lost, refused (the camera is busy) or can't be sent (its TCP connection has just dropped) is sent again
+        for CLOSE_STOP_RETRY s, on a new connection if need be; a camera that never took it is logged."""
         self._closed = True
-        for _ in range(CLOSE_STOP_TRIES):  # a lost or refused stop is sent again: nothing stops this camera after this
+        running = any(not task.done() for task in self._tasks)  # (False: never started, or closed already)
+        deadline, error = None, None
+        while True:
+            started = time.monotonic()
             try:
                 await self.stop_now()
+                error = None
                 break
-            except Exception:  # noqa: BLE001 - closing anyway
-                for task in self._tasks:  # (it goes out from here at once, not after position inquiries)
-                    task.cancel()
+            except Exception as e:  # noqa: BLE001 - closing anyway
+                error = e
+            for task in self._tasks:  # (it goes out from here at once, not after position inquiries)
+                task.cancel()
+            if deadline is None:
+                deadline = time.monotonic() + CLOSE_STOP_RETRY
+            if running and not self._reconnecting and not self.visca.connected:  # its TCP connection dropped
+                self._reconnecting = asyncio.ensure_future(self._reconnect())
+            if self._reconnecting:  # the next try goes out on the new connection
+                await asyncio.wait([self._reconnecting], timeout=max(0.0, deadline - time.monotonic()))
+            elif not self.visca.connected:
+                break  # nothing to send it on
+            if time.monotonic() + CLOSE_STOP_GAP > deadline:
+                break
+            await asyncio.sleep(max(0.0, started + CLOSE_STOP_GAP - time.monotonic()))
+        if error and running and self.log:
+            self.log.event("camera", f"stop not acknowledged on closing, the camera may still be moving: {error}",
+                           level="error", source=self.name)
         if self._reconnecting:
             self._reconnecting.cancel()
         for task in self._tasks:
@@ -336,8 +359,8 @@ class CameraLink:
             except (OSError, ValueError) as e:  # (ValueError: a host name with a typo)
                 self.last_error = str(e) or type(e).__name__
                 return
-            if self._closed or self.visca is not new:  # closed meanwhile: leave no connection open
-                new.close()
+            if self.visca is not new:  # replaced meanwhile: leave no connection open
+                new.close()  # (a link closed meanwhile closes it itself, after sending the stop on it)
                 return
             async with self._motion:
                 if self._want != (0, 0, 0):  # (a stop would cancel an absolute move under way)
