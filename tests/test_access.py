@@ -175,3 +175,41 @@ def test_devices_signing_in_at_once_are_all_kept(tmp_path):
             tokens = list(pool.map(lambda i: guard.sign_in(f"10.0.0.{i}", "2468"), range(16)))
         again = AccessGuard(tmp_path / "access.json")
         assert all(tokens) and all(again.signed_in(t) for t in tokens)
+
+
+def test_a_tool_sending_the_right_pin_in_a_burst_is_never_refused(tmp_path, monkeypatch):
+    """A Companion button with several actions: 12 requests at once with the correct header PIN, and none
+    remembered yet. Each try is counted before the slow comparison, so they must not count each other as
+    the five wrong ones (6th and later refused with 401, STOP ALL among them)."""
+    guard = AccessGuard(tmp_path / "access.json")
+    guard.set_pin("2468")
+    real, hashed = access.hashlib.pbkdf2_hmac, []
+
+    def slow(*args):
+        hashed.append(args)
+        time.sleep(0.05)
+        return real(*args)
+
+    monkeypatch.setattr(access.hashlib, "pbkdf2_hmac", slow)
+    with ThreadPoolExecutor(12) as pool:
+        results = list(pool.map(lambda _: guard.allowed("10.0.0.9", None, "2468"), range(12)))
+    assert all(results) and len(hashed) == 1  # (the others wait for the first check and use its answer)
+    assert guard.wait_left("10.0.0.9") == 0
+
+
+def test_wrong_header_pins_sent_all_at_once_still_wait_after_five(tmp_path, monkeypatch):
+    guard = AccessGuard(tmp_path / "access.json")
+    guard.set_pin("2468")
+    real, hashed = access.hashlib.pbkdf2_hmac, []
+
+    def slow(*args):
+        hashed.append(args)
+        time.sleep(0.02)
+        return real(*args)
+
+    monkeypatch.setattr(access.hashlib, "pbkdf2_hmac", slow)
+    with ThreadPoolExecutor(20) as pool:
+        results = list(pool.map(lambda _: guard.allowed("10.0.0.9", None, "0000"), range(20)))
+    assert not any(results) and len(hashed) == access.FREE_TRIES
+    assert guard.wait_left("10.0.0.9") == pytest.approx(access.FIRST_WAIT, abs=1)
+    assert not guard.allowed("10.0.0.9", None, "2468")  # the right PIN waits too

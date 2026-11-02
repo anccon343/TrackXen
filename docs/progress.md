@@ -594,6 +594,9 @@ code. The suite went from 158 to 383 tests.
   close pages that are already open. They reconnect and show the PIN screen if they need it.
 - **PIN tries** are counted under a lock before the slow comparison, so 20 PINs sent at once no longer
   get 20 tries. Saving `access.json` from two sign-ins at once no longer fails.
+  - Found in a second review: that also counted a tool's burst of requests with the *right* header
+    PIN against each other, so the 6th and later (STOP ALL among them) got 401. Header PINs from one
+    address are now checked one at a time, and the rest of a burst uses the first answer.
 - **Face delete** takes only registered face ids, so a request can't name another file.
 - **Escaping:** the `/test` page escapes camera names and problem texts. The text log writes line
   breaks and control characters in names as escapes, so a name can't forge a log line.

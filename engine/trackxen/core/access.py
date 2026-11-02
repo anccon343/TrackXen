@@ -47,6 +47,7 @@ class AccessGuard:
         self.ask_local = False
         self._failures: dict[str, tuple[int, float]] = {}  # address -> (wrong PINs in a row, wait until)
         self._header_ok: dict[str, float] = {}  # sha256 of a correct header PIN -> when checked
+        self._checking: dict[str, threading.Lock] = {}  # address -> held while its header PIN is checked
         self._lock = threading.Lock()  # PINs are checked in several threads at once
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -80,12 +81,23 @@ class AccessGuard:
         if header_pin is None:
             return False
         key = _digest(f"{self._pin['salt']}:{header_pin}")
-        if time.monotonic() - self._header_ok.get(key, -HEADER_REMEMBER_S) < HEADER_REMEMBER_S:
+        if self._header_remembered(key):
             return True
-        if self.check_pin(address, header_pin):
-            self._header_ok[key] = time.monotonic()
-            return True
-        return False
+        with self._lock:
+            one_at_a_time = self._checking.setdefault(address, threading.Lock())
+        # One header check per address at a time: a tool's burst of requests with the right PIN would
+        # otherwise count each other as wrong tries (each is counted before the slow comparison) and the
+        # 6th and later would be refused. The rest of the burst then uses the first one's answer.
+        with one_at_a_time:
+            if self._header_remembered(key):
+                return True
+            if self.check_pin(address, header_pin):
+                self._header_ok[key] = time.monotonic()
+                return True
+            return False
+
+    def _header_remembered(self, key: str) -> bool:
+        return time.monotonic() - self._header_ok.get(key, -HEADER_REMEMBER_S) < HEADER_REMEMBER_S
 
     def wait_left(self, address: str) -> float:
         return max(0.0, self._failures.get(address, (0, 0.0))[1] - time.monotonic())
