@@ -325,7 +325,7 @@ class CameraSession:
         if self.zones.get(pick["id"]) == "halting":
             return None, "that person is inside a tracking halting area"
         self.manual_at = time.monotonic()
-        self.cue = None  # the operator's pick wins over a microphone still waiting for its person
+        self.drop_cue()  # the operator's pick wins over a microphone still waiting for its person
         self.select_id(pick["id"])
         return pick["id"], ""
 
@@ -533,7 +533,8 @@ class CameraSession:
             self.set_tracking(True, "audio cue", start_at_initial=False)
 
     def drop_cue(self) -> None:
-        """Forget a microphone cue (Audio follow switched off), with its start of tracking at the preset."""
+        """Forget a microphone cue (Audio follow switched off, a person clicked), with its start of tracking at
+        the preset."""
         if self.cue and self.move:  # (with a cue waiting, the move under way is the cue's own)
             self.move.then_track = False
         self.cue = None

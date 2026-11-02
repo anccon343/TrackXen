@@ -746,6 +746,7 @@ third).
 - Found in a third review: switching Audio follow off for a camera (or audio-follow off in Settings)
   while a mic's cue was taking it to its preset left the cue's "start tracking there" in place, so
   the camera switched Auto Tracking on when it arrived and picked someone. That is dropped now too.
+  Found in a fourth review: clicking a person during that move still left it; that drops it now too.
 - A malformed mixer address is shown and retried. Without levels the mixer link reopens every 30 s.
 
 **The program, logs and downloads**

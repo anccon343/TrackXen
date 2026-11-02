@@ -453,6 +453,18 @@ def test_audio_cue_with_a_preset_still_starts_tracking_there():
     assert s.move.then_track and s.cue is not None and not s.tracking
 
 
+def test_clicking_a_person_during_the_cues_move_drops_its_start_of_tracking():
+    """The operator's pick wins over the mic: a camera still on its way to the mic's preset then doesn't switch
+    Auto Tracking on when it gets there (the user guide's promise, as for the PTZ tab and Auto Tracking off)."""
+    s, _ = new_session()
+    s.on_tracks(message([track(1, 400), track(5, 1500)]))
+    s.audio_cue(1, "Pastor", 3, "", slow=False)
+    assert s.select_at(1500 / W, 540 / H) == (5, "")
+    s.move.started -= 1.0  # the camera has arrived and stopped
+    s.tick(time.monotonic())
+    assert s.move is None and not s.tracking and s.cue is None and s.target_id == 5
+
+
 def test_preset_recall_and_other_controllers_count_as_moving_by_hand():
     s, _ = new_session()
     s.recall_preset(5)
