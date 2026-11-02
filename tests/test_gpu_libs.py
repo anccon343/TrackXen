@@ -211,11 +211,16 @@ def test_what_the_manifest_tool_writes_is_what_the_app_downloads(tmp_path, wheel
         (site / path).parent.mkdir(parents=True, exist_ok=True)
         (site / path).write_bytes(data)
     versions = {"nvidia-cuda-runtime": "13.4.92", "nvidia-cudnn-cu13": "9.27.0.42", "tensorrt-cu13-libs": "10.16.1.11"}
+    # each package has its own DLLs, as on Windows (the tool refuses a list without some package's DLLs)
+    owners = {"nvidia/cu13/": "nvidia-cuda-runtime", "nvidia/cudnn/": "nvidia-cudnn-cu13",
+              "tensorrt_libs/": "tensorrt-cu13-libs"}
+    monkeypatch.setattr(tool, "PACKAGES", list(owners.values()))  # the packages this test wheel stands in for
 
     class Distribution:
         def __init__(self, name):
             self.version = versions.get(name, "1.0")
-            self.files = [PurePosixPath(p) for p in contents] if name == "tensorrt-cu13-libs" else []
+            self.files = [PurePosixPath(p) for p in contents
+                          if any(p.startswith(prefix) and owner == name for prefix, owner in owners.items())]
 
         def locate_file(self, record):
             return site / record
