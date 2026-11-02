@@ -606,11 +606,13 @@ def test_problem_lights_for_cameras_freed_vmix_and_mixer(tmp_path, workers, stub
 
 def test_requests_from_another_web_site_are_refused(tmp_path, workers):
     app = make_app(tmp_path, AppConfig())
-    client = TestClient(create_server(app, AccessGuard(tmp_path / "access.json")), client=("127.0.0.1", 50000))
+    # (opened as this PC: the server answers only its own names and addresses)
+    client = TestClient(create_server(app, AccessGuard(tmp_path / "access.json")), base_url="http://127.0.0.1:8090",
+                        client=("127.0.0.1", 50000))
     stop = {"type": "stop_all"}
     assert client.post("/api/command", json=stop, headers={"Origin": "http://evil.example"}).status_code == 403
-    assert client.post("/api/command", json=stop, headers={"Origin": "http://testserver"}).status_code == 200
+    assert client.post("/api/command", json=stop, headers={"Origin": "http://127.0.0.1:8090"}).status_code == 200
     assert client.post("/api/command", json=stop).status_code == 200  # tools and Companion send no Origin
     with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/ws", headers={"Origin": "http://evil.example"}) as ws:
+        with client.websocket_connect("ws://127.0.0.1:8090/ws", headers={"Origin": "http://evil.example"}) as ws:
             ws.receive_json()
