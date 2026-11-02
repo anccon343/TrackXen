@@ -14,6 +14,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from trackxen.core.config import FaceRef
+from trackxen.rules.audio import AudioFollowConfig
 
 
 class Face(BaseModel):
@@ -47,7 +48,9 @@ class FaceStore:
         self._save()
 
     def delete(self, face_id: str) -> None:
-        self.faces.pop(face_id, None)
+        """Delete a registered face; any other id does nothing (it comes from the page: never a file name)."""
+        if self.faces.pop(face_id, None) is None:
+            return
         (self.folder / f"{face_id}.jpg").unlink(missing_ok=True)
         self._save()
 
@@ -93,6 +96,10 @@ class FaceManager:
     def worker_started(self) -> None:
         if self.store.faces:
             self._to_worker({"type": "faces", "gallery": self.store.gallery()})
+        # a new worker knows nothing of a registration under way: it carries on (cameras still there)
+        self.captures = {n: c for n, c in self.captures.items() if c[0] in self.app.sessions}
+        for number, (camera, _) in self.captures.items():
+            self._to_worker({"type": "face_capture", "camera": camera, "capture": number})
 
     def on_message(self, msg: dict) -> bool:
         """Face messages from the vision worker; False for anything else."""
@@ -121,6 +128,17 @@ class FaceManager:
         self._changed()
         self.app.log.event("faces", f"face registered: {face.name}", source=camera)
 
+    def unmap_mics(self, audio: AudioFollowConfig) -> None:
+        """Audio-follow mic mappings name only faces this PC has: a deleted face's mic would
+        otherwise send a camera looking for nobody."""
+        for m in audio.mappings:
+            if m.face and m.face not in self.store.faces:
+                m.face = ""
+
+    def _drop_captures(self, camera: str) -> None:
+        """The worker forgot this camera's pending capture (registration frame off, or a new capture)."""
+        self.captures = {n: c for n, c in self.captures.items() if c[0] != camera}
+
     def _changed(self) -> None:
         """Face list edits are kept at once (like Canon's registration), and the face thread is told."""
         if self.app.config_path:
@@ -132,11 +150,14 @@ class FaceManager:
         if kind == "face_guide":  # the registration frame on this camera's picture, on or off
             self._to_worker({"type": "face_guide", "camera": session.cfg.id, "on": bool(cmd["on"])})
             self.guides.pop(session.cfg.id, None)
+            if not cmd["on"]:
+                self._drop_captures(session.cfg.id)
             return {"ok": True}
         if kind == "face_capture":
             if len(refs) >= 7:
                 return {"ok": False, "error": "all 7 face slots of this camera are in use"}
             number = max(self.captures, default=0) + 1
+            self._drop_captures(session.cfg.id)  # the worker keeps only the newest one per camera
             self.captures[number] = (session.cfg.id, str(cmd.get("name", ""))[:40])
             self._to_worker({"type": "face_capture", "camera": session.cfg.id, "capture": number})
             return {"ok": True, "capture": number}
@@ -162,6 +183,7 @@ class FaceManager:
             if not any(face_id in [r.id for r in s.cfg.faces] for s in self.app.sessions.values()):
                 self.store.delete(face_id)
                 self.names.pop(face_id, None)
+                self.unmap_mics(self.app.config.audio)
                 self.app.log.event("faces", "face deleted", source=session.cfg.id)
         else:
             return {"ok": False, "error": f"unknown command {kind}"}
@@ -176,5 +198,6 @@ class FaceManager:
         for s in self.app.sessions.values():
             s.cfg.faces = []
             s.settings_rev += 1
+        self.unmap_mics(self.app.config.audio)
         self._changed()
         self.app.log.event("faces", "all face data deleted", level="warning")

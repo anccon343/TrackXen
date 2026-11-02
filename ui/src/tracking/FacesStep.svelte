@@ -46,6 +46,11 @@
     const reply = await faces.command(camera.id, { type: "face_capture", name });
     capturing = reply.ok;
   }
+
+  function cancel() {
+    capturing = false; // the engine drops the capture too: it is not "registered"
+    faces.stopGuide();
+  }
 </script>
 
 <div class="row"><span>Registered Face Tracking</span>
@@ -80,7 +85,7 @@
     <p class="status" class:ok={camera.face_guide?.ok}>{camera.face_guide ? (camera.face_guide.ok ? "Face is usable" : camera.face_guide.problem) : "Looking…"}</p>
     <input type="text" maxlength="40" placeholder="Name (for example Pastor)" bind:value={name} />
     <div class="buttons">
-      <button onclick={() => faces.stopGuide()}>Cancel</button>
+      <button onclick={cancel}>Cancel</button>
       <button class="primary" disabled={!camera.face_guide?.ok || capturing} onclick={capture}>{capturing ? "Capturing…" : "Capture"}</button>
     </div>
   </div>

@@ -123,12 +123,14 @@ function draw() {
 }
 
 const fmt = (v, d = 1) => (v === undefined || v === null || Number.isNaN(v)) ? "–" : Number(v).toFixed(d);
-function rows(el, list) { el.innerHTML = list.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join(""); }
+// text from the settings or the cameras (names, messages) goes into HTML only escaped
+const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+function rows(el, list) { el.innerHTML = list.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(""); }
 
 function render() {
   const sel = $("camera");
   if (sel.options.length !== status.cameras.length) {
-    sel.innerHTML = status.cameras.map((c) => `<option value="${c.id}">${c.name}</option>`).join("");
+    sel.innerHTML = status.cameras.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
     if (!cam && status.cameras.length) cam = status.cameras[0].id;
   }
   const c = camStatus(); if (!c) return;
@@ -161,7 +163,7 @@ function render() {
     ["Network in / out", `${fmt(s.net_rx_mbps)} / ${fmt(s.net_tx_mbps)} Mbit/s`],
   ]);
   $("problems").innerHTML = status.problems.length
-    ? status.problems.map((p) => `<div class="problem ${p.level}">${p.source}: ${p.message}</div>`).join("") : "none";
+    ? status.problems.map((p) => `<div class="problem ${esc(p.level)}">${esc(p.source)}: ${esc(p.message)}</div>`).join("") : "none";
 }
 
 $("camera").onchange = (e) => { cam = e.target.value; };

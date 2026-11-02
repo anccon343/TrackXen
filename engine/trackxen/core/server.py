@@ -2,21 +2,27 @@
 
 Preview messages are binary: the camera id, a newline, then the JPEG. With the optional PIN on
 (core/access.py), every /api route except signing in, and the WebSocket, need a signed-in
-device, the PIN in an X-TrackXen-PIN header, or a request from this PC.
+device, the PIN in an X-TrackXen-PIN header, or a request from this PC (opened as localhost).
+
+Only requests addressed to this PC are answered (its IP address, localhost or its own name), so a
+web page elsewhere whose name was pointed at this PC (DNS rebinding) is refused.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 import time
 from pathlib import Path
 
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.websockets import WebSocketState
 
 from trackxen.core import logview
 from trackxen.core.access import COOKIE, HEADER, LOCAL, AccessGuard
@@ -27,6 +33,9 @@ from trackxen.core.performance import PRESETS
 STATIC = Path(__file__).resolve().parent / "static"
 OPEN_ROUTES = {"/api/access", "/api/access/login", "/api/access/logout"}  # usable before signing in
 COOKIE_AGE = 365 * 24 * 3600
+SAME_SITE = {"same-origin", "none"}  # Sec-Fetch-Site of the page's own requests, and of typed-in addresses
+SIGNED_OUT = 4000  # live connection closed after a sign-out or PIN change: the page connects again
+STALE_SETTINGS = "The settings were changed on another device. Reload them and try again."
 
 
 def same_origin(headers) -> bool:
@@ -40,8 +49,50 @@ def check_origin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="cross-site request refused")
 
 
+def own_names() -> set[str]:
+    """This PC's own names, which may be used instead of its IP address."""
+    name = socket.gethostname()
+    short = name.split(".")[0]
+    names = {"localhost", name, short, f"{short}.local", socket.getfqdn()}
+    return {n.lower().rstrip(".") for n in names if n}
+
+
+def _host_name(host: str | None) -> str:
+    """The name or address in a Host header, without the port ("" if there is none)."""
+    if not host or any(c in host for c in "@/\\?#"):
+        return ""
+    try:
+        return (urlsplit(f"//{host}").hostname or "").rstrip(".")
+    except ValueError:
+        return ""
+
+
+def own_host(host: str | None, names: set[str]) -> bool:
+    """Was the request sent to this PC: an IP address, localhost or this PC's name? A page from
+    elsewhere sends its own name even when that name was pointed at this PC."""
+    name = _host_name(host)
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return name in names
+
+
+def _loopback_host(host: str | None) -> bool:
+    name = _host_name(host)
+    try:
+        return name == "localhost" or ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
 def _address(conn: Request | WebSocket) -> str:
-    return conn.client.host if conn.client else ""
+    """The device's address. This PC counts as itself (no PIN) only when it opened TrackXen as
+    localhost or 127.0.0.1: under another name the page could be another web site's."""
+    address = conn.client.host if conn.client else ""
+    if address in LOCAL and not _loopback_host(conn.headers.get("host")):
+        return f"{address} (by name)"
+    return address
 
 
 def _with_cookie(body: dict, token: str | None) -> JSONResponse:
@@ -59,6 +110,9 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
     guarded = [Depends(check_origin)]
     guard = guard or AccessGuard(app.data / "access.json",
                                  log=lambda level, message: app.log.event("access", message, level=level))
+    names = own_names()
+    config_lock = asyncio.Lock()  # one settings change at a time (its revision is checked first)
+    live_errors: dict[str, float] = {}  # live connection error -> when last logged
 
     @api.middleware("http")
     async def require_pin(request: Request, call_next):
@@ -68,6 +122,16 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
             if not guard.allowed(address, cookie) and (
                     pin is None or not await asyncio.to_thread(guard.allowed, address, cookie, pin)):
                 return JSONResponse({"detail": "PIN required"}, status_code=401)
+        return await call_next(request)
+
+    @api.middleware("http")
+    async def this_pc_only(request: Request, call_next):
+        """(Runs before require_pin.) Another site's page can't use the API, even with a renamed
+        address or without an Origin (an <img> pointing at /api/discover)."""
+        if not own_host(request.headers.get("host"), names):
+            return PlainTextResponse("Open TrackXen by this PC's IP address or name.", status_code=403)
+        if request.url.path.startswith("/api/") and request.headers.get("sec-fetch-site", "none") not in SAME_SITE:
+            return JSONResponse({"detail": "cross-site request refused"}, status_code=403)
         return await call_next(request)
 
     @api.get("/api/access")
@@ -99,8 +163,8 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         if guard.enabled and address not in LOCAL and not await asyncio.to_thread(
                 guard.check_pin, address, body.get("current")):
             raise HTTPException(status_code=403, detail="The current PIN is wrong")
-        try:
-            token = guard.set_pin(body.get("pin"), bool(body.get("ask_local", False)))
+        try:  # (hashing the new PIN takes ~0.1 s: not on the event loop, which drives the cameras)
+            token = await asyncio.to_thread(guard.set_pin, body.get("pin"), bool(body.get("ask_local", False)))
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
         return _with_cookie({"ok": True, **guard.status(address, token)}, token)
@@ -132,15 +196,20 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
 
     @api.get("/api/config")
     async def get_config():
-        return app.config.model_dump()
+        """The settings, with their revision (a settings page sends it back with its changes)."""
+        return {**app.config.model_dump(), "_rev": getattr(app, "config_rev", 0)}
 
     @api.post("/api/config", dependencies=guarded)
     async def set_config(body: dict):
+        rev = body.pop("_rev", None)  # (tools may leave it out)
         try:
             cfg = AppConfig.model_validate(body)
         except ValidationError as e:
             raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
-        await app.apply_config(cfg)
+        async with config_lock:
+            if rev is not None and rev != getattr(app, "config_rev", 0):
+                raise HTTPException(status_code=409, detail=STALE_SETTINGS)
+            await app.apply_config(cfg)
         return {"ok": True}
 
     @api.get("/api/system")
@@ -237,8 +306,13 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
             cfg = AppConfig.model_validate(body)
         except ValidationError as e:
             raise HTTPException(status_code=422, detail=e.errors(include_url=False)) from e
-        cfg.web_host, cfg.web_port = app.config.web_host, app.config.web_port  # keep this PC's web address
-        await app.apply_config(cfg, whole=True)
+        here = app.config  # what belongs to this PC: its web address and what its hardware test found
+        cfg.web_host, cfg.web_port = here.web_host, here.web_port
+        cfg.performance_mode, cfg.auto_preset = here.performance_mode, here.auto_preset
+        cfg.model_override, cfg.engines = here.model_override, list(here.engines)
+        app.faces.unmap_mics(cfg.audio)  # faces stay on their PC: mics can't name faces this PC lacks
+        async with config_lock:
+            await app.apply_config(cfg, whole=True)
         return {"ok": True}
 
     @api.get("/api/discover")
@@ -273,11 +347,12 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
 
     @api.websocket("/ws")
     async def ws(socket: WebSocket):
-        if not same_origin(socket.headers):  # another web site's page must not drive the cameras
-            await socket.close(code=1008)
+        if not same_origin(socket.headers) or not own_host(socket.headers.get("host"), names):
+            await socket.close(code=1008)  # another web site's page must not drive the cameras
             return
         await socket.accept()
-        if not guard.allowed(_address(socket), socket.cookies.get(COOKIE)):
+        address, cookie = _address(socket), socket.cookies.get(COOKIE)
+        if not guard.allowed(address, cookie):
             await socket.close(code=4401)  # the page then shows the PIN screen
             return
         new_preview = asyncio.Event()
@@ -286,30 +361,58 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         send_lock = asyncio.Lock()
         sent: dict[str, int] = {}
 
+        def connected() -> bool:
+            return socket.application_state == WebSocketState.CONNECTED == socket.client_state
+
+        async def close(code: int) -> None:
+            async with send_lock:
+                if connected():
+                    await socket.close(code=code)
+
         async def sender():
             next_status = 0.0
-            while True:
-                try:
-                    await asyncio.wait_for(new_preview.wait(), timeout=0.1)
-                except TimeoutError:
-                    pass
-                new_preview.clear()
-                async with send_lock:
-                    for cam, (seq, jpeg) in list(app.previews.items()):
-                        if sent.get(cam) != seq:
-                            sent[cam] = seq
-                            await socket.send_bytes(cam.encode() + b"\n" + jpeg)
-                    if time.monotonic() >= next_status:
-                        next_status = time.monotonic() + 0.1
-                        await socket.send_json({"type": "status", **app.status()})
+            try:
+                while connected():
+                    try:
+                        await asyncio.wait_for(new_preview.wait(), timeout=0.1)
+                    except TimeoutError:
+                        pass
+                    new_preview.clear()
+                    if not guard.allowed(address, cookie):  # signed out, or the PIN changed, since it connected
+                        await close(SIGNED_OUT)  # (when it connects again it gets 4401 if it must sign in)
+                        return
+                    async with send_lock:
+                        if not connected():
+                            return
+                        for cam, (seq, jpeg) in list(app.previews.items()):
+                            if sent.get(cam) != seq:
+                                sent[cam] = seq
+                                await socket.send_bytes(cam.encode() + b"\n" + jpeg)
+                        if time.monotonic() >= next_status:
+                            next_status = time.monotonic() + 0.1
+                            await socket.send_json({"type": "status", **app.status()})
+            except WebSocketDisconnect:
+                pass  # the page went away
+            except Exception as e:  # noqa: BLE001 - rather than frozen states on the page: log it, and it connects again
+                if not connected():
+                    return
+                message = f"live connection closed after an error: {e!r}"
+                if time.monotonic() - live_errors.get(message, -60.0) >= 60.0:  # (once a minute, not every retry)
+                    live_errors[message] = time.monotonic()
+                    app.log.event("app", message, level="error")
+                await close(1011)
 
         task = asyncio.create_task(sender())
         try:
-            while True:
+            while connected():
                 cmd = await socket.receive_json()
+                if not guard.allowed(address, cookie):  # signed out since it connected: no more commands
+                    await close(SIGNED_OUT)
+                    break
                 result = await app.command(cmd)
                 async with send_lock:
-                    await socket.send_json({"type": "reply", "request": cmd.get("id"), **result})
+                    if connected():
+                        await socket.send_json({"type": "reply", "request": cmd.get("id"), **result})
         except WebSocketDisconnect:
             pass
         finally:
