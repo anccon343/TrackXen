@@ -579,6 +579,10 @@ code. The suite went from 158 to 383 tests.
 - **NDI names:** a full "HOST (STREAM)" name is matched only exactly (case does not matter), so
   "ALTAR (CAM)" no longer takes "SIDEALTAR (CAM)". A partial name that matches several sources is
   refused with "NDI name X matches several sources: A, B (choose one of them)".
+  - Found in a second review: a partial name still took the only source containing it when its own
+    wasn't announced yet ("CAM1" took "PC (CAM10)" while camera 1 was booting). A partial name now
+    takes a source at once only when it is that source's whole host or stream name; a source that
+    merely contains it ("BIRDDOG" in "BIRDDOG-1 (CAM)") is taken when the first search ends (2 s).
 - Other event-loop stalls removed: host names are looked up off the loop, the stats day file is read
   in pieces (worst loop lateness 1456 ms → 6 ms on a 120 MB file), `/api/log` reads only the end of
   the log, and setting the PIN hashes off the loop.

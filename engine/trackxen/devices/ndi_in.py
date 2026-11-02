@@ -98,7 +98,9 @@ class NdiReceiver:
     def _find(self) -> object | None:
         """The configured source by its exact name, or by part of a name ("TRACKXEN SIM 1" also finds
         "ANTTONPC (TRACKXEN SIM 1)") when only one source has that part. A full "HOST (STREAM)" name is
-        taken only as it is, so "ALTAR (CAM)" never picks "SIDEALTAR (CAM)" before its own source shows up."""
+        taken only as it is, so "ALTAR (CAM)" never picks "SIDEALTAR (CAM)" before its own source shows up.
+        A part that is a whole host or stream name wins; a part inside a longer one ("CAM1" in "PC (CAM10)")
+        is taken only once the first search is over, so a source not announced yet gets its chance."""
         names, self._matches = self._finder.get_source_names(), []
         if self.source_name in names:
             return self._finder.get_source(self.source_name)
@@ -107,8 +109,9 @@ class NdiReceiver:
             matches = [name for name in names if name.lower() == wanted]
         else:
             matches = [name for name in names if wanted in name.lower()]
-            if len(matches) > 1:  # "CAM1" with "PC (CAM1)" and "PC (CAM10)": a whole host or stream name wins
-                matches = [name for name in matches if wanted in _name_parts(name)] or matches
+            whole = [name for name in matches if wanted in _name_parts(name)]
+            if whole or time.monotonic() < self._search_until:  # "CAM1": "PC (CAM1)", not "PC (CAM10)"
+                matches = whole
         self._matches = matches
         if len(matches) != 1:  # none yet, or several: don't guess which camera's video to track
             return None
@@ -124,8 +127,9 @@ class NdiReceiver:
             self._search_until = time.monotonic() + timeout
         while True:
             self._finder.update_sources()
+            searched = time.monotonic() >= self._search_until  # (before _find: it then takes a part of a name too)
             source = self._find()
-            if source is not None or time.monotonic() >= self._search_until:
+            if source is not None or searched:
                 break
             time.sleep(POLL_INTERVAL)  # (lets the other threads run, unlike wait_for_sources)
         if source is None:

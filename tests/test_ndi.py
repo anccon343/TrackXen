@@ -102,3 +102,57 @@ def test_an_ambiguous_partial_name_is_reported_not_guessed():
     with pytest.raises(LookupError, match="several sources"):
         receiver.start(timeout=0.1)
     assert receiver.source_name == "BIRDDOG"
+
+
+class AnnouncingFinder(StubFinder):
+    """Sources announced one by one: (seconds after the finder opened, name)."""
+
+    def __init__(self, schedule: list[tuple[float, str]]):
+        super().__init__([])
+        self.schedule, self.opened = schedule, 0.0
+
+    def open(self):
+        super().open()
+        self.opened = time.monotonic()
+
+    def update_sources(self):
+        self.names = [name for after, name in self.schedule if time.monotonic() - self.opened >= after]
+        return self.names
+
+
+class FakeReceiver:
+    def __init__(self, **kwargs):
+        self.source = None
+        self.frame_sync = self
+
+    def set_video_frame(self, video):
+        pass
+
+    def set_source(self, source):
+        self.source = source
+
+    def disconnect(self):
+        pass
+
+
+def started(wanted: str, schedule: list[tuple[float, str]], monkeypatch, timeout: float = 1.0) -> str:
+    """The source start() connects to, with the sources announced as in `schedule`."""
+    monkeypatch.setattr(ndi_in, "Receiver", FakeReceiver)
+    receiver = ndi_in.NdiReceiver(wanted)
+    receiver._finder = AnnouncingFinder(schedule)
+    receiver._run = lambda: None
+    receiver.start(timeout=timeout)
+    return receiver.receiver.source
+
+
+def test_a_partial_name_waits_for_its_own_source(monkeypatch):
+    """"CAM1" while only "PC (CAM10)" is announced (camera 1 still booting): it contains "CAM1", but not as its
+    whole host or stream name. Taking it would track camera 10's video with camera 1."""
+    assert started("CAM1", [(0.0, "PC (CAM10)"), (0.3, "PC (CAM1)")], monkeypatch) == "PC (CAM1)"
+    assert started("BIRDDOG-12345", [(0.0, "BIRDDOG-12345 (CAM)")], monkeypatch) == "BIRDDOG-12345 (CAM)"
+
+
+def test_a_partial_name_inside_a_name_is_taken_once_the_search_is_over(monkeypatch):
+    t0 = time.monotonic()
+    assert started("BIRDDOG", [(0.0, "BIRDDOG-1 (CAM)")], monkeypatch, timeout=0.3) == "BIRDDOG-1 (CAM)"
+    assert time.monotonic() - t0 >= 0.3  # (after waiting for a source with exactly that name)
