@@ -319,6 +319,15 @@ def test_a_reconnect_does_not_cancel_an_absolute_move_but_resends_a_drive():
     asyncio.run(run())
 
 
+def tcp_camera_reply(msg: bytes) -> bytes:
+    """A minimal TCP camera's answer: a position reply of the inquiry's own length (8 pan/tilt nibbles,
+    4 zoom nibbles, as a real camera sends them), or ACK + completion for a command."""
+    if msg[1] != 0x09:
+        return b"\x90\x41\xff\x90\x51\xff"
+    nibbles = 8 if msg[2:4] == b"\x06\x12" else 4
+    return b"\x90\x50" + bytes(nibbles) + b"\xff"
+
+
 def test_only_one_reconnect_at_a_time_and_close_leaves_no_connection(monkeypatch):
     """K51: a slow TCP connect must not let more reconnects start (each would leave a connection open)."""
     async def run():
@@ -329,8 +338,7 @@ def test_only_one_reconnect_at_a_time_and_close_leaves_no_connection(monkeypatch
             try:
                 while data := await reader.read(64):
                     for msg in visca.split_messages(data):
-                        writer.write(b"\x90\x50\x00\x00\x00\x00\x00\x00\x00\x00\xff" if msg[1] == 0x09
-                                     else b"\x90\x41\xff\x90\x51\xff")
+                        writer.write(tcp_camera_reply(msg))
                     await writer.drain()
             except OSError:
                 pass
@@ -422,8 +430,7 @@ def test_a_tcp_camera_that_is_off_at_start_is_connected_once_it_answers():
         async def camera(reader, writer):
             while data := await reader.read(64):
                 for msg in visca.split_messages(data):
-                    writer.write(b"\x90\x50\x00\x00\x00\x00\x00\x00\x00\x00\xff" if msg[1] == 0x09
-                                 else b"\x90\x41\xff\x90\x51\xff")
+                    writer.write(tcp_camera_reply(msg))
                 await writer.drain()
             writer.close()
 
