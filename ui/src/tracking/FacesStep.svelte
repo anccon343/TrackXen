@@ -14,6 +14,8 @@
   let registering = $derived(faces.guide === camera.id);
   let name = $state("");
   let capturing = $state(false);
+  let before = $state<string[] | null>(null); // the stored faces when Capture was pressed
+  let started = false; // the engine has shown the capture as pending
   let selected = $state<string | null>(null);
 
   let rev = $derived(camera.settings_rev); // the engine bumps it when this camera's face list changes
@@ -22,13 +24,14 @@
     void rev;
     faces.load();
   });
+  // The capture is over when a new face is stored, or when the engine stops showing it as pending
+  // (a status from before the capture command still says "not pending": that doesn't count).
   $effect(() => {
-    if (capturing && !pending) {
-      capturing = false;
-      faces.stopGuide();
-      ui.notify(`${name || "Face"} registered`);
-      name = "";
-    }
+    if (!capturing || !before) return;
+    const ids = before;
+    if (faces.list.some((f) => !ids.includes(f.id))) finish();
+    else if (pending) started = true;
+    else if (started) finish();
   });
   onDestroy(() => {
     if (faces.guide === camera.id) faces.stopGuide();
@@ -43,13 +46,35 @@
   }
 
   async function capture() {
+    capturing = true;
+    started = false;
+    await faces.load().catch(() => undefined);
+    if (!capturing) return; // cancelled meanwhile
+    before = faces.list.map((f) => f.id);
     const reply = await faces.command(camera.id, { type: "face_capture", name });
-    capturing = reply.ok;
+    if (!reply.ok) cancel();
   }
 
-  function cancel() {
-    capturing = false; // the engine drops the capture too: it is not "registered"
+  /** Registered if a new face was stored; the frame is switched off then. */
+  async function finish() {
+    const ids = before ?? [];
+    capturing = false;
+    before = null;
+    await faces.load().catch(() => undefined);
+    const added = faces.list.find((f) => !ids.includes(f.id));
+    if (!added) {
+      ui.notify("No face was registered: try again");
+      return;
+    }
+    ui.notify(`${added.name || "Face"} registered`);
+    name = "";
     faces.stopGuide();
+  }
+
+  /** Capturing is over without a result (Cancel, or the engine refused the capture). */
+  function cancel() {
+    capturing = false; // (a cancelled capture is dropped by the engine too: it is not "registered")
+    before = null;
   }
 </script>
 
@@ -85,7 +110,7 @@
     <p class="status" class:ok={camera.face_guide?.ok}>{camera.face_guide ? (camera.face_guide.ok ? "Face is usable" : camera.face_guide.problem) : "Looking…"}</p>
     <input type="text" maxlength="40" placeholder="Name (for example Pastor)" bind:value={name} />
     <div class="buttons">
-      <button onclick={cancel}>Cancel</button>
+      <button onclick={() => { cancel(); faces.stopGuide(); }}>Cancel</button>
       <button class="primary" disabled={!camera.face_guide?.ok || capturing} onclick={capture}>{capturing ? "Capturing…" : "Capture"}</button>
     </div>
   </div>

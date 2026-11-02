@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { settings } from "../lib/config.svelte";
   import CameraSettings from "../settings/CameraSettings.svelte";
   import PerformanceSettings from "../settings/PerformanceSettings.svelte";
@@ -20,8 +21,10 @@
   let { page = $bindable("cameras") }: { page?: string } = $props();
   let current = $derived(pages.find((p) => p.id === page)!);
 
-  $effect(() => {
-    if (!settings.draft) settings.load();
+  // Fresh settings each time the page opens (other devices may have changed them), unless this
+  // device has changes not applied yet.
+  onMount(() => {
+    if (!settings.draft || !settings.dirty) settings.load();
   });
 </script>
 

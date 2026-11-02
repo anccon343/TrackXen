@@ -32,14 +32,21 @@ class Access {
   }
 
   async signIn(pin: string): Promise<string> {
-    const r = await fetch("/api/access/login", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin }),
-    });
+    let r: Response;
+    try {
+      r = await fetch("/api/access/login", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin }),
+      });
+    } catch {
+      return "TrackXen is not reachable: try again in a moment";
+    }
     if (r.ok) {
       this.needed = false;
       await this.check();
       return "";
     }
+    await this.check(); // the PIN may have been switched off meanwhile: then nothing more is needed
+    if (!this.needed) return "";
     try {
       return (await r.json()).detail ?? "Wrong PIN";
     } catch {

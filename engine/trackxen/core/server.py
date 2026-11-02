@@ -343,7 +343,7 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         path = app.log.text_path
         if not path.exists():
             return ""
-        return "\n".join(path.read_text(encoding="utf-8").splitlines()[-lines:])
+        return await asyncio.to_thread(tail_lines, path, lines)  # (the Statistics page asks every 3 s)
 
     @api.websocket("/ws")
     async def ws(socket: WebSocket):
@@ -420,3 +420,21 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
             app.listeners.discard(notify)
 
     return api
+
+
+def tail_lines(path: Path, lines: int) -> str:
+    """The last `lines` lines of a text file, reading only as much of its end as they need (the day's
+    log grows to megabytes)."""
+    lines = max(1, lines)
+    with path.open("rb") as f:
+        size = f.seek(0, 2)
+        chunk = 64 * 1024
+        while True:
+            start = max(0, size - chunk)
+            f.seek(start)
+            data = f.read(size - start)
+            if start == 0 or data.count(b"\n") > lines:
+                break
+            chunk *= 4
+    text = data.decode("utf-8", errors="replace").splitlines()
+    return "\n".join((text[1:] if start else text)[-lines:])  # (the first line read may be cut)

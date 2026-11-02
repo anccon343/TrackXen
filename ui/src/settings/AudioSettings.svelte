@@ -16,8 +16,9 @@
   let mixer = $derived(live.status?.mixer ?? null);
   let cameras = $derived(live.status?.cameras ?? []);
 
+  const load = () => getJSON<{ audio: Audio }>("/api/config").then((c) => (audio = c.audio));
   $effect(() => {
-    getJSON<{ audio: Audio }>("/api/config").then((c) => (audio = c.audio));
+    load();
     faces.ensure();
   });
 
@@ -25,8 +26,12 @@
     if (!audio) return;
     Object.assign(audio, changes);
     const reply = await live.request({ type: "audio_settings", settings: $state.snapshot(audio) });
-    if (!reply.ok) ui.notify(reply.error ?? "Not possible");
-    else audio = reply.audio as Audio;
+    if (reply.ok) {
+      audio = reply.audio as Audio;
+      return;
+    }
+    ui.notify(reply.error ?? "Not possible");
+    await load().catch(() => undefined); // show what the engine has (the refused value would make every later save fail too)
   }
 
   const mappingOf = (ch: number) => audio?.mappings.find((m) => m.channel === ch);
@@ -46,7 +51,7 @@
     if (!m) return;
     const presets = { ...m.presets };
     if (value === "") delete presets[camera];
-    else presets[camera] = Math.max(1, Math.min(128, +value));
+    else presets[camera] = Math.max(1, Math.min(128, Math.round(+value)));
     edit(ch, { presets });
   }
   function move(ch: number, by: number) {

@@ -10,8 +10,11 @@
   async function submit() {
     if (pin.length < 4 || busy) return;
     busy = true;
-    error = await access.signIn(pin);
-    busy = false;
+    try {
+      error = await access.signIn(pin);
+    } finally {
+      busy = false;
+    }
     pin = "";
     if (!error) onsignedin();
   }

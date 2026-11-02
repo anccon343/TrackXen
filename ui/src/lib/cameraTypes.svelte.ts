@@ -37,10 +37,22 @@ class CameraTypes {
     return { id: `cam${n}`, name: `Camera ${n}`, ndi: "", capture_device: 0, low_bandwidth: false, host, ...d, model };
   }
 
-  /** Switch a camera to another type: its type's control, lens, speed and video settings. */
-  apply(cam: Camera, model: string, n: number): void {
+  /** A new camera of this type next to `cams`: the first free number (id camN) and a free FreeD port. */
+  add(model: string, cams: Camera[]): Camera {
+    let n = 1;
+    while (cams.some((c) => c.id === `cam${n}`)) n++;
+    const cam = this.create(model, n);
+    if (cam.freed_port) cam.freed_port = freePort(cams, cam.freed_port);
+    return cam;
+  }
+
+  /** Switch a camera to another type: its type's control, lens, speed and video settings. Its FreeD
+   *  port stays (the camera sends to it); one is picked when it had none. */
+  apply(cam: Camera, model: string, cams: Camera[]): void {
     const keep = { id: cam.id, name: cam.name, host: cam.host, ndi: cam.ndi, capture_device: cam.capture_device };
-    Object.assign(cam, this.create(model, n), keep);
+    const port = cam.freed_port;
+    Object.assign(cam, this.create(model, 1), keep);
+    if (cam.freed_port) cam.freed_port = port || freePort(cams.filter((c) => c !== cam), 40001);
   }
 
   /** The RTSP address a camera uses when none is typed (PTZOptics: rtsp://IP:554/1). */
@@ -54,6 +66,13 @@ class CameraTypes {
 }
 
 export const cameraTypes = new CameraTypes();
+
+/** The first FreeD port from `from` up that none of `cams` uses. */
+function freePort(cams: Camera[], from: number): number {
+  let port = from;
+  while (cams.some((c) => c.freed_port === port)) port++;
+  return port;
+}
 
 /** One line for the user about a camera test. */
 export function describeTest(t: CameraTest): string[] {

@@ -65,6 +65,7 @@ class Slots {
   data = $state<SlotsData | null>(null);
   private inFlight = 0;
   private loading = false;
+  private selected = ""; // the camera shown (sync), whose settings `camera` should be
 
   get slot(): AppSettings | undefined {
     return this.data?.slots[this.data.active];
@@ -77,6 +78,7 @@ class Slots {
   /** Follow the selected camera; reload when someone else (another tablet) changed its settings. */
   sync(camera: CameraStatus | undefined): void {
     if (!camera) return;
+    this.selected = camera.id;
     if (camera.id !== this.camera) this.load(camera.id);
     else if (this.data && camera.settings_rev > this.data.rev && !this.inFlight) this.load(camera.id);
   }
@@ -95,14 +97,19 @@ class Slots {
   }
 
   /** Change values of the selected App Settings: shown at once, then confirmed by the engine. */
-  async patch(settings: Patch): Promise<Reply> {
-    const slot = this.slot;
+  async patch(settings: Patch, camera = this.selected): Promise<Reply> {
+    const slot = this.camera === camera ? this.slot : undefined;
     if (slot) mergeInto(slot as unknown as Patch, settings);
-    return this.command({ type: "slot_settings", settings }, false);
+    return this.command({ type: "slot_settings", settings }, false, camera);
   }
 
-  /** A camera command that changes settings; reloads them afterwards when the result is only known there. */
-  async command(cmd: Patch, reload = true): Promise<Reply> {
+  /** A camera command that changes settings; reloads them afterwards when the result is only known there.
+   *  For `camera` (the one shown) only once its settings are loaded here. */
+  async command(cmd: Patch, reload = true, camera = this.selected): Promise<Reply> {
+    if (camera !== this.camera) { // another camera was just selected: its settings are still loading
+      ui.notify("Loading this camera's tracking settings: try again in a moment");
+      return { ok: false, error: "still loading" };
+    }
     this.inFlight++;
     try {
       const reply = await live.request({ camera: this.camera, ...cmd });
