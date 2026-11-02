@@ -45,7 +45,7 @@ pyinstaller-hooks-contrib==2026.9
 pystray==0.19.5
 pytest==9.2.0
 python-osc==1.10.2
-pywin32==312
+pywin32==312; sys_platform == "win32"
 pywin32-ctypes==0.2.3
 ruff==0.17.3
 six==1.17.0

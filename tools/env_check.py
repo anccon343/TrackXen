@@ -152,10 +152,12 @@ def main(args) -> int:
         except Exception as e:  # noqa: BLE001
             show("FAIL", "model export", str(e).splitlines()[0][:300])
     child_report = results_path("env-check-runtime", ".json")
-    subprocess.run([sys.executable, __file__, "--runtime-only", "--report", str(child_report)], check=False)
+    child = subprocess.run([sys.executable, __file__, "--runtime-only", "--report", str(child_report)], check=False)
     if child_report.exists():
         REPORT.update(json.loads(child_report.read_text(encoding="utf-8")))
         child_report.unlink()
+    if child.returncode != 0:  # e.g. ONNX Runtime missing, a DLL that doesn't load, a crash in a GPU engine
+        show("FAIL", "onnxruntime check", f"stopped early (exit code {child.returncode}); its error is printed above")
     path = results_path("env-check", ".json")
     path.write_text(json.dumps(REPORT, indent=2), encoding="utf-8")
     print(f"saved {path}")

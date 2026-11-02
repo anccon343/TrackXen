@@ -1,7 +1,8 @@
 """Talk to a camera over VISCA over IP: read its position, move it, and measure its speed steps.
 
-Read-only by default. Anything that moves the camera needs --yes, and every run
-ends with a stop command (also on Ctrl+C).
+Read-only by default. Anything that moves the camera needs --yes and ends with a stop
+command (also on Ctrl+C). `info` only reads: it sends no stop, so it never halts a move made by
+vMix, an operator or TrackXen.
 
   python tools/visca_probe.py 192.168.1.50 info
   python tools/visca_probe.py 192.168.1.50 move --pan right --speed 3 --seconds 2 --yes
@@ -242,7 +243,8 @@ async def main(args) -> int:
         return 1
     finally:
         try:
-            await client.stop_all()
+            if moves or args.command == "stop":
+                await client.stop_all()
         except visca.ViscaError:
             pass
         client.close()

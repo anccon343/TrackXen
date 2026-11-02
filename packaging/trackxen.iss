@@ -2,14 +2,18 @@
 ; Build: packaging\build.ps1  (or: ISCC packaging\trackxen.iss after the PyInstaller build in dist\TrackXen)
 ;
 ; The person installing chooses "only for me" (no administrator needed: %LOCALAPPDATA%\Programs) or
-; "for all users" (Program Files; also adds a Windows Firewall rule so tablets and phones on the
-; private network can open the UI on port 8090; for "only for me" Windows asks on the first start).
+; "for all users" (Program Files; also adds a Windows Firewall rule for TrackXen.exe on private and
+; domain networks, so tablets and phones can open the UI on port 8090 and the cameras' FreeD position
+; data gets in; for "only for me" Windows asks on the first start).
 ; Start-menu (and optional desktop) shortcuts, an optional start-with-Windows entry.
 ; NVIDIA's libraries are not in the setup: TrackXen downloads the ones the PC needs on its first
 ; start (%LOCALAPPDATA%\TrackXen\gpu-libs). Settings, logs, registered faces and the TensorRT
 ; engines built for the GPU live in %APPDATA%\TrackXen; both are kept on uninstall.
+; An upgrade replaces the program's _internal folder as a whole, so no file of an older build stays.
 
 #define AppName "TrackXen"
+; The version is also in pyproject.toml, engine/trackxen/__init__.py, packaging/version.txt,
+; ui/package.json and a few other files; tests/test_tools.py checks that they all agree.
 #define AppVersion "0.1.0"
 
 [Setup]
@@ -39,6 +43,10 @@ MinVersion=10.0
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 Name: "autostart"; Description: "Start TrackXen when I sign in to Windows"; GroupDescription: "Start:"; Flags: unchecked
 
+[InstallDelete]
+; files an older build had but this one doesn't (a left-over DLL there would still be loaded)
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 Source: "..\dist\TrackXen\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -52,8 +60,11 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
   ValueData: """{app}\TrackXen.exe"" --no-browser"; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
+; the rule of an earlier install first, so an upgrade doesn't add a second copy
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""TrackXen"""; Flags: runhidden; \
+  Check: IsAdminInstallMode
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""TrackXen"" dir=in action=allow program=""{app}\TrackXen.exe"" enable=yes profile=private,domain"; \
-  Flags: runhidden; StatusMsg: "Allowing tablets on the network to reach TrackXen..."; Check: IsAdminInstallMode
+  Flags: runhidden; StatusMsg: "Allowing tablets and the cameras' FreeD data through the Windows Firewall..."; Check: IsAdminInstallMode
 Filename: "{app}\TrackXen.exe"; Description: "Start TrackXen now"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]

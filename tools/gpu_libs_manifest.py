@@ -84,12 +84,22 @@ def file_digest(path: Path) -> tuple[int, int, str]:
     return size, crc, sha.hexdigest()
 
 
+def unlisted(files: list[dict]) -> list[str]:
+    """The packages without a single DLL in the list (e.g. one made off Windows, where they hold .so files)."""
+    return [name for name in PACKAGES if not any(f.get("package") == name for f in files)]
+
+
 def check() -> int:
-    """No network: the list's package versions are the installed ones."""
-    listed = json.loads(OUT.read_text(encoding="utf-8"))["versions"] if OUT.exists() else {}
+    """No network: the list's package versions are the installed ones, and every package has DLLs in it."""
+    data = json.loads(OUT.read_text(encoding="utf-8")) if OUT.exists() else {}
+    listed = data.get("versions", {})
     installed = {name: md.distribution(name).version for name in PACKAGES}
     if listed != installed:
         print(f"{OUT.name} is for {listed or 'nothing'}, installed are {installed}")
+        return 1
+    missing = unlisted(data.get("files", []))
+    if missing:
+        print(f"{OUT.name} has no DLLs of {', '.join(missing)}: run tools/gpu_libs_manifest.py again on Windows")
         return 1
     print(f"{OUT.name} matches the installed NVIDIA packages")
     return 0
@@ -123,6 +133,11 @@ def main() -> int:
                               "compressed": info.compress_size, "method": info.compress_type, "crc": info.CRC,
                               "gpu": builder.group(1).lower() if builder else None, "package": name})
                 print(f"  {info.compress_size / 1e6:7.1f} MB  {path}")
+    missing = unlisted(files)
+    if missing:  # the app would never download these and stay on the processor
+        print(f"no DLLs found for {', '.join(missing)}: run this on Windows (only the Windows packages have them); "
+              f"{OUT.name} is unchanged")
+        return 1
     v = versions
     manifest = {"id": f"cuda{v['nvidia-cuda-runtime'].rsplit('.', 1)[0]}-cudnn{v['nvidia-cudnn-cu13'].rsplit('.', 2)[0]}"
                       f"-trt{'.'.join(v['tensorrt-cu13-libs'].split('.')[:3])}",

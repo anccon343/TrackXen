@@ -2,6 +2,10 @@
 
 **Status:** approved 2026-10-31 ("install python and start building").
 - **Built:** Phases 0 and 2-7, checked in the simulator (details and measurements in `progress.md`).
+- **Planned in Phases 2-7 but not built yet:** body re-ID (Phase 4c; the identity lock uses faces
+  only), the update check against GitHub Releases (Phase 7), and "Stop all cameras" in the tray menu
+  (STOP ALL is on every screen of the web UI). The performance modes set less than planned: see
+  section 1.
 - **The questions' answers, also built on 2026-11-01:** speed-ups (HYPER now fits 4 cameras), the PIN
   option, the NVIDIA libraries downloaded on first start, the setup program (built and test-installed),
   and the folder renamed to `Desktop\TrackXen`.
@@ -34,16 +38,22 @@
   - **Audio-follow:** the active microphone on your **Midas MR18** (or X Air) picks the target.
 - **Installable app** (requirement added 2026-10-31): downloaded and installed on **any Windows 10/11 PC**,
   not tied to this machine. It runs best on an NVIDIA RTX card, and also runs on other GPUs or CPU only,
-  with fewer cameras or lower rates. Tablets and phones install nothing; they open the app in a browser.
+  with fewer cameras or lower rates. (As built, a PC without an NVIDIA card runs detection on the
+  processor; AMD and Intel GPUs aren't used.) Tablets and phones install nothing; they open the app in a browser.
 - **Web UI** in Canon's style, used from the PC and from tablets/phones.
 - **Performance modes** (requirement added 2026-10-31), switchable at any time:
   - **Light**, for slower PCs or when sharing with vMix: smallest model, lower input resolution, fewer
-    detections per second, NDI low-bandwidth stream, face checks less often.
+    detections per second, NDI low-bandwidth stream, face checks less often. (As built: the n model
+    at 640, 15 detections per second per camera, low-bandwidth NDI; faces are checked as often as in
+    the other modes.)
   - **Auto** (default): picks settings that fit the PC, from a benchmark on first run.
   - **HYPER**: the best and most responsive tracking, whatever the load.
-    - The largest models and the highest input resolution.
+    - The largest models and the highest input resolution. (As built: the m model at 960; no l model
+      is exported.)
     - Detection on every frame (up to 60 per second), full-bandwidth NDI.
-    - Faces and body re-ID on every frame, and the fastest control loop.
+    - Faces and body re-ID on every frame, and the fastest control loop. (Not built: in every mode
+      each person's face is checked twice a second and the control loop runs at 50 Hz; there is no
+      body re-ID yet.)
     - The statistics page still warns when the PC can't keep up; the safety watchdog always stays on.
 - **Statistics and problem indicators** (requirement added 2026-10-31):
   - Basic PC load (GPU, CPU) is always visible in the UI.
@@ -68,17 +78,17 @@
 | Area | Choice |
 |---|---|
 | Engine | Python 3.12 in its own virtual environment |
-| Finding people | **Ultralytics YOLO26-pose**: one model gives each person's box plus body keypoints (enough for face direction, sit/stand, raised hands). Exported to **ONNX** and run with **ONNX Runtime**, which picks the best engine on each PC: TensorRT FP16 on NVIDIA, DirectML on AMD/Intel, CPU as a last resort. Detection-only YOLO26 and RF-DETR as fallbacks |
+| Finding people | **Ultralytics YOLO26-pose**: one model gives each person's box plus body keypoints (enough for face direction, sit/stand, raised hands). Exported to **ONNX** and run with **ONNX Runtime**, which picks the best engine on each PC: TensorRT FP16 on NVIDIA, DirectML on AMD/Intel, CPU as a last resort. As built: TensorRT FP16 on NVIDIA (CUDA while TensorRT prepares), otherwise the CPU; DirectML would need the separate `onnxruntime-directml` build, which the app doesn't use. Detection-only YOLO26 and RF-DETR as fallbacks |
 | Following people | ByteTrack / BoT-SORT-style trackers in plain Python/numpy (Roboflow `trackers`, or our own), one per camera, fed with camera movement from FreeD. No PyTorch needed in the installed app |
 | Faces | YuNet (find) + SFace (recognise), from OpenCV |
-| Identity lock | Face when visible, plus a body re-ID model (ONNX), added in Phase 4c |
+| Identity lock | Face when visible, plus a body re-ID model (ONNX), added in Phase 4c. As built: faces only; body re-ID isn't built yet |
 | Model tooling | Ultralytics (with PyTorch) runs only on the development PC, to export and fine-tune models. The installed app just runs the exported ONNX files |
-| Packaging | PyInstaller bundle + Inno Setup installer (one `.exe`), start-menu shortcut, tray icon, uninstaller; update check against GitHub Releases |
+| Packaging | PyInstaller bundle + Inno Setup installer (one `.exe`), start-menu shortcut, tray icon, uninstaller; update check against GitHub Releases (not built yet) |
 | First run on a new PC | Hardware check, then an automatic performance tier, then a TensorRT engine build for that GPU (a few minutes, once). After that it finds the NDI sources, P400s and MR18 on the network |
 | NDI runtime | Bundled under NDI's SDK licence (with the required NDI attribution), or installed from NDI's site |
-| Performance modes | Light / Auto / HYPER. Models are exported in several sizes (YOLO26 n/s/m/l-pose) and input resolutions (480–1280); the mode chooses which one runs and how often |
+| Performance modes | Light / Auto / HYPER. Models are exported in several sizes (YOLO26 n/s/m/l-pose) and input resolutions (480–1280); the mode chooses which one runs and how often. As built: n/s/m at 640 and 960 |
 | Statistics | `psutil` (CPU, memory, network) and NVIDIA's NVML (GPU load, video memory, temperature), plus the app's own counters. Written once a second, with an event log, to files in the app's data folder (kept for a set number of days) |
-| GPU runtime | ONNX Runtime's own CUDA/cuDNN packages (`onnxruntime-gpu[cuda,cudnn]`), which ship with the app; PyTorch's CUDA is only used for development |
+| GPU runtime | ONNX Runtime's own CUDA/cuDNN packages (`onnxruntime-gpu[cuda,cudnn]`), which ship with the app; PyTorch's CUDA is only used for development. Since 2026-11-01 they don't ship with the app: it downloads them, and TensorRT's, on its first start (`core/gpu_libs.py`) |
 | Video in | NDI 6 via `cyndilib` (NDI 6 Tools are already installed on this PC) |
 | Camera control | Our own VISCA-over-IP client (UDP 52381), FreeD listener, BirdDog REST client (port 8080) |
 | vMix | TCP API client (port 8099), `SUBSCRIBE TALLY` |
@@ -112,7 +122,9 @@
 - **Why two processes:** if the heavy part stalls or crashes, the core **stops all cameras** and
   restarts it. A hiccup in vision never leaves a camera moving.
 - **Launcher:** a small tray app starts both processes and opens the UI. Its menu has "Open",
-  "Stop all cameras" and "Quit".
+  "Stop all cameras" and "Quit". (As built, TrackXen.exe is the core service with the tray icon; its
+  menu has Open TrackXen, Open the logs folder and Quit TrackXen. "Stop all cameras" isn't built yet:
+  STOP ALL is on every screen of the web UI.)
 
 **Control loop, per camera:**
 1. **Find the target in room angles:** its position in the frame, plus the camera's FreeD position at
@@ -221,7 +233,7 @@ never runs away, and it stops if the app or the network drops. The packaged vers
   - 7 slots; registration with the green capture frame
   - priority by drag; on/off; delete
   - consent reminder
-  - identity lock with face + body re-ID
+  - identity lock with face + body re-ID (built with faces; body re-ID not yet)
 - **4d Camera Preset Link:**
   - preset table (On / Off / blank + App Settings slot)
   - recall presets from the UI
@@ -251,7 +263,9 @@ live camera only makes slow, small corrections.
 - All four cameras at once.
 - Hardware auto-detection, plus the **Light / Auto / HYPER** performance modes. Each mode sets the model
   size, input resolution, detections per second, NDI bandwidth, how often faces and re-ID run, and the
-  control-loop rate. The first-run benchmark picks the Auto settings.
+  control-loop rate. The first-run benchmark picks the Auto settings. (As built, a mode sets the model
+  size, input resolution, detections per second, NDI bandwidth and preview rate; faces are checked
+  twice a second and the control loop runs at 50 Hz in every mode.)
 - **Statistics page (advanced):**
   - **Per camera:** frame rate and dropped frames, video delay, model time, tracking state and target
     changes, VISCA commands and errors, FreeD rate, on-air time.
@@ -276,7 +290,7 @@ live camera only makes slow, small corrections.
     meanwhile polls the camera's position over VISCA
 - **Moving between PCs:** settings stored per user (`%APPDATA%`); show files carry a whole setup from
   one PC to another.
-- **Updates:** update check against GitHub Releases.
+- **Updates:** update check against GitHub Releases (not built yet).
 - **Licence notices:**
   - The app is AGPL because of the Ultralytics models.
   - NDI attribution.
