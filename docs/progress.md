@@ -539,6 +539,11 @@ code. The suite went from 158 to 383 tests.
   made after it (found while merging).
 - **In the UI:** while the live connection reconnects, STOP ALL goes over HTTP. If it can't reach
   TrackXen, the page says "STOP ALL didn't reach TrackXen (...): press it again".
+  - Found in a second review: a STOP ALL sent on a live connection that then dropped waited 5 s and
+    was never sent over HTTP, and on a connection dead without closing every press went into it. Now a
+    stop without an answer (the connection closed meanwhile: at once; no answer: after 5 s) is sent
+    again over HTTP. The same goes for the hold-to-move stop. Tested in node on the real store
+    (`tests/test_ui_live.py`, skipped without node and the UI's packages).
 - **Auto Tracking off** also cancels a pending "start tracking at the preset" (Camera Preset Link On,
   or an audio cue) and a microphone cue still waiting for its person.
 

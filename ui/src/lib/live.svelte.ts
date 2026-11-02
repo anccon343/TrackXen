@@ -176,7 +176,7 @@ class Live {
   private ws: WebSocket | null = null;
   private lastStats = "";
   private nextId = 1;
-  private pending = new Map<number, (reply: Reply) => void>();
+  private pending = new Map<number, (reply: Reply | null) => void>(); // null: no answer came
   private missingSince = new Map<string, number>();
 
   connect(): void {
@@ -188,6 +188,8 @@ class Live {
     ws.onclose = (ev) => {
       this.connected = false;
       this.ws = null;
+      for (const settle of this.pending.values()) settle(null); // their answers can't come any more
+      this.pending.clear();
       if (ev.code === 4401) access.lost(); // the PIN is needed: the PIN screen connects again
       else setTimeout(() => this.connect(), 1000);
     };
@@ -249,22 +251,32 @@ class Live {
   }
 
   /** Send a command and wait for the engine's answer ({ok: false, error} on failure). */
-  request(cmd: Record<string, unknown>): Promise<Reply> {
-    if (this.ws?.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, error: "not connected" });
+  async request(cmd: Record<string, unknown>): Promise<Reply> {
+    if (this.ws?.readyState !== WebSocket.OPEN) return { ok: false, error: "not connected" };
+    return (await this.ask(cmd)) ?? { ok: false, error: "no answer from TrackXen" };
+  }
+
+  /** The engine's answer over the live connection, or null when none came (in 5 s, or the connection closed). */
+  private ask(cmd: Record<string, unknown>): Promise<Reply | null> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.pending.set(id, resolve);
       this.send({ ...cmd, id });
       setTimeout(() => {
-        if (this.pending.delete(id)) resolve({ ok: false, error: "no answer from TrackXen" });
+        if (this.pending.delete(id)) resolve(null);
       }, 5000);
     });
   }
 
   /** For commands that must arrive (stops): like request(), but over HTTP while the live connection
-   *  is down (reconnecting), or when `closing` (the page is being closed: the request still finishes). */
+   *  is down (reconnecting), or when `closing` (the page is being closed: the request still finishes).
+   *  Sent on the live connection without an answer (it closed meanwhile, or is dead without closing),
+   *  it is sent again over HTTP; an answer from the engine, also a refusal, is taken as it is. */
   async requestReliably(cmd: Record<string, unknown>, closing = false): Promise<Reply> {
-    if (this.ws?.readyState === WebSocket.OPEN && !closing) return this.request(cmd);
+    if (this.ws?.readyState === WebSocket.OPEN && !closing) {
+      const reply = await this.ask(cmd);
+      if (reply) return reply;
+    }
     try {
       const r = await fetch("/api/command", { method: "POST", headers: { "Content-Type": "application/json" },
                                               body: JSON.stringify(cmd), keepalive: true });
