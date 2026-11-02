@@ -22,6 +22,7 @@ from trackxen.core.config import AppConfig, CameraConfig
 from trackxen.core.server import create_server
 from trackxen.core.session import CameraSession
 from trackxen.devices.visca import ViscaError
+from trackxen.integrations.vmix import Tally, VmixInput, VmixLink
 from trackxen.rules.audio import AudioFollowConfig, MicMapping
 from trackxen.sim.fake_camera import FakeCamera
 
@@ -519,6 +520,61 @@ def test_a_connections_change_during_a_save_is_kept(tmp_path, workers, stub_link
             assert app.config.vmix.host == "127.0.0.1"
             saved = AppConfig.load(tmp_path / "settings.json")
             assert saved.vmix.host == "127.0.0.1" and saved.cameras[0].name == "Pulpit"
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_live_camera_stays_on_air_over_an_apply_while_vmix_is_away(tmp_path, workers, stub_links):
+    """vMix not connected: each camera keeps its last on-air state until vMix reports again, also when an Apply
+    makes the cameras again. Else the live camera gets the off-air motion, and audio-follow takes it for free."""
+    async def scenario():
+        cfg = config("cam1", "cam2")
+        cfg.cameras[0].vmix_input, cfg.cameras[1].vmix_input = "k1", "k2"
+        app = make_app(tmp_path, cfg)
+        await app.start()
+        try:
+            vmix = app.inputs.vmix = VmixLink("vmix.test", on_change=app.inputs.on_tally)
+            vmix.inputs = [VmixInput(1, "k1", "Camera 1", "NDI", "Cam 1"), VmixInput(2, "k2", "Camera 2", "NDI", "Cam 2")]
+            vmix.connected, vmix.tally = True, [Tally.PROGRAM, Tally.OFF]
+            app.inputs.on_tally()
+            vmix.connected, vmix.tally = False, []  # the vMix PC restarts
+            app.inputs.on_tally()
+            renamed = app.config.model_copy(deep=True)
+            renamed.cameras[1].name = "Choir"  # a camera change: the sessions are made again
+            await app.apply_config(renamed)
+            assert app.sessions["cam1"].on_air and not app.sessions["cam2"].on_air
+            vmix.connected, vmix.tally = True, [Tally.OFF, Tally.PROGRAM]  # vMix is back: its tally counts again
+            app.inputs.on_tally()
+            assert not app.sessions["cam1"].on_air and app.sessions["cam2"].on_air
+        finally:
+            app.inputs.vmix = None
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
+def test_camera_commands_during_an_apply_are_kept(tmp_path, workers, stub_links):
+    """Commands from Companion or another tablet while an Apply closes the old cameras go to the old cameras'
+    settings: they were answered ok, so they must be in the new settings and in the saved file too."""
+    async def scenario():
+        app = make_app(tmp_path, config("cam1", "cam2"))
+        await app.start()
+        try:
+            for link in StubLink.made:
+                link.close_takes = 0.3
+            renamed = app.config.model_copy(deep=True)
+            renamed.cameras[1].name = "Choir"  # a camera change: the sessions are made again
+            saving = asyncio.create_task(app.apply_config(renamed))
+            assert await until(lambda: app.config is renamed)
+            assert (await app.command({"type": "slot", "camera": "cam1", "index": 2}))["ok"]
+            assert (await app.command({"type": "vmix_input", "camera": "cam1", "input": "k3"}))["ok"]
+            await saving
+            cam1 = app.sessions["cam1"].cfg
+            assert (cam1.active_slot, cam1.vmix_input) == (2, "k3")
+            saved = AppConfig.load(tmp_path / "settings.json").cameras[0]
+            assert (saved.active_slot, saved.vmix_input) == (2, "k3")
         finally:
             await app.stop()
 

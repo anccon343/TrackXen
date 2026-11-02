@@ -112,7 +112,8 @@ class App:
         self._jobs: set[asyncio.Task] = set()  # background jobs (vision worker restarts)
         self._config_lock = asyncio.Lock()  # one settings apply or vision worker restart at a time
         self._link_retry: dict[str, tuple[float, float, str]] = {}  # camera -> (next try, delay, error)
-        self._carry: dict[str, tuple[bool, bool | None]] = {}  # camera -> (audio_follow, on_air_manual) over an apply
+        # camera -> (audio_follow, on_air_manual, on_air_tally) over an apply
+        self._carry: dict[str, tuple[bool, bool | None, bool]] = {}
         self._stopped_in_apply = False  # STOP ALL was pressed while settings were being applied
         self._restart_delay = 0.0  # delay of the last crash restart (doubles while the worker keeps crashing)
         self._workers_started = 0
@@ -160,8 +161,8 @@ class App:
             session = CameraSession(cam, link, self.counters, self.log)
             session.face_names = self.faces.names
             carried = self._carry.pop(cam.id, None)
-            if carried:  # Audio follow and On Air stay as the operator set them (apply_config)
-                session.audio_follow, session.on_air_manual = carried
+            if carried:  # Audio follow and On Air stay as the operator set them, and on air as vMix last said
+                session.audio_follow, session.on_air_manual, session.on_air_tally = carried  # (apply_config)
             if self._stopped_in_apply:  # STOP ALL pressed while settings were applied: it holds here too
                 session.audio_follow = False
             self.sessions[cam.id] = session
@@ -218,9 +219,17 @@ class App:
         await self._stop_worker()
         if not same_cameras:
             await self._close_links(closing)
-            # the operator's Audio follow and On Air switches, as they are now (also a STOP ALL meanwhile),
-            # go to the new sessions (_start_cameras)
-            self._carry = {s.cfg.id: (s.audio_follow, s.on_air_manual) for s in closing}
+            if not whole:  # camera commands meanwhile (App Settings, vMix input, faces) went to the old settings
+                new = {c.id: c for c in config.cameras}
+                for s in closing:
+                    if s.cfg.id in new:
+                        for field in LIVE_CAMERA_FIELDS:
+                            setattr(new[s.cfg.id], field, getattr(s.cfg, field))
+                if self.config_path:
+                    self.config.save(self.config_path)
+            # the operator's Audio follow and On Air switches, as they are now (also a STOP ALL meanwhile), and
+            # vMix's last on-air state (it stays while vMix is not connected) go to the new sessions (_start_cameras)
+            self._carry = {s.cfg.id: (s.audio_follow, s.on_air_manual, s.on_air_tally) for s in closing}
             self.sessions.clear()
         self.limits.expected_fps.clear()
         if not same_cameras:
@@ -621,7 +630,7 @@ class App:
         sessions = list(self.sessions.values())
         if self._config_lock.locked():  # settings being applied: cameras still to be made keep it off too
             self._stopped_in_apply = True
-            self._carry = {i: (False, on_air) for i, (_, on_air) in self._carry.items()}
+            self._carry = {i: (False, *on_air) for i, (_, *on_air) in self._carry.items()}
         for s in sessions:
             s.move, s.cue, s.audio_follow = None, None, False
             try:

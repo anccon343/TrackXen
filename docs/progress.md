@@ -520,6 +520,9 @@ code. The suite went from 158 to 383 tests (394 with the fixes from a second rev
 - **Applying settings** no longer freezes camera control while the old vision worker exits (with a
   worker that took 1 s to exit: a 1.02 s stall before, under 0.3 s now). Applies run one at a time.
   Commands sent during an apply change the new settings.
+  - Found in a third review: camera commands (App Settings 1-5, vMix input, preset links reset, face
+    delete) sent while an apply closed the old cameras were answered ok but lost. They are kept now,
+    also in settings.json. A show file still replaces everything.
 - **Log writes:** a full disk, a deleted logs folder or a locked file no longer raises out of the log.
   Before, that could end the control loop with a camera moving. A "pc" warning says the log files
   can't be written, and a deleted folder is made again.
@@ -715,6 +718,9 @@ code. The suite went from 158 to 383 tests (394 with the fixes from a second rev
   longer drops the tally, and renumbered inputs are evaluated again within about 10 s.
 - **vMix not connected:** each camera keeps its last on-air state, including the calm on-air motion,
   until vMix reports again. With no vMix address set, cameras are off Program as before.
+  - Found in a third review: an Apply that made the cameras again, or loading a show file, still put
+    a live camera off air until vMix reported again, so audio-follow could send it to a preset at
+    full speed. Its on-air state now carries over too.
 - A mic waiting for the live camera is forgotten when audio-follow is switched off or the mixer
   stops sending levels.
 - A malformed mixer address is shown and retried. Without levels the mixer link reopens every 30 s.
