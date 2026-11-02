@@ -1,4 +1,6 @@
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from starlette.testclient import TestClient
@@ -10,6 +12,7 @@ from trackxen.core.server import create_server
 
 TABLET = ("192.168.1.20", 50000)
 THIS_PC = ("127.0.0.1", 50000)
+PC = "http://192.168.1.5:8090"  # how tablets open TrackXen (this PC itself: http://127.0.0.1:8090)
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +35,8 @@ class StubApp:
 
 def server(tmp_path, client=TABLET) -> tuple[TestClient, AccessGuard]:
     guard = AccessGuard(tmp_path / "access.json")
-    return TestClient(create_server(StubApp(), guard), client=client), guard
+    base = "http://127.0.0.1:8090" if client == THIS_PC else PC
+    return TestClient(create_server(StubApp(), guard), base_url=base, client=client), guard
 
 
 def test_pin_is_stored_hashed_and_survives_a_restart(tmp_path):
@@ -123,7 +127,7 @@ def test_changing_the_pin_from_a_tablet_needs_the_current_one(tmp_path):
     assert client.post("/api/access/pin", json={"pin": "5678", "current": "0000"}).status_code == 403
     r = client.post("/api/access/pin", json={"pin": "5678", "current": "1234"})
     assert r.status_code == 200 and r.json()["signed_in"]  # the changing tablet stays signed in...
-    other = TestClient(client.app, client=("192.168.1.30", 50000))
+    other = TestClient(client.app, base_url=PC, client=("192.168.1.30", 50000))
     assert other.post("/api/access/login", json={"pin": "1234"}).status_code == 401  # ...the old PIN is gone
     assert client.post("/api/access/pin", json={"pin": None, "current": "5678"}).status_code == 200
     assert not guard.enabled and other.get("/api/status").status_code == 200
@@ -132,11 +136,11 @@ def test_changing_the_pin_from_a_tablet_needs_the_current_one(tmp_path):
 def test_the_live_connection_needs_the_pin_too(tmp_path):
     client, guard = server(tmp_path)
     guard.set_pin("1234")
-    with client.websocket_connect("/ws") as ws, pytest.raises(WebSocketDisconnect) as closed:
+    with client.websocket_connect("ws://192.168.1.5:8090/ws") as ws, pytest.raises(WebSocketDisconnect) as closed:
         ws.receive_json()
     assert closed.value.code == 4401
     client.post("/api/access/login", json={"pin": "1234"})
-    with client.websocket_connect("/ws") as ws:
+    with client.websocket_connect("ws://192.168.1.5:8090/ws") as ws:
         assert ws.receive_json()["type"] == "status"
 
 
@@ -144,3 +148,30 @@ def test_the_page_itself_loads_without_a_pin(tmp_path):
     client, guard = server(tmp_path)
     guard.set_pin("1234")
     assert client.get("/").status_code == 200
+
+
+def test_pins_sent_all_at_once_still_wait_after_five(tmp_path, monkeypatch):
+    guard = AccessGuard(tmp_path / "access.json")
+    guard.set_pin("2468")
+    real, hashed = access.hashlib.pbkdf2_hmac, []
+
+    def slow(*args):
+        hashed.append(args)
+        time.sleep(0.05)  # the real 200 000 rounds take ~0.1 s, and other requests run meanwhile
+        return real(*args)
+
+    monkeypatch.setattr(access.hashlib, "pbkdf2_hmac", slow)
+    with ThreadPoolExecutor(20) as pool:  # like the server's thread pool
+        results = list(pool.map(lambda _: guard.check_pin("10.0.0.9", "0000"), range(20)))
+    assert not any(results) and len(hashed) == access.FREE_TRIES
+    assert guard.wait_left("10.0.0.9") == pytest.approx(access.FIRST_WAIT, abs=1)
+
+
+def test_devices_signing_in_at_once_are_all_kept(tmp_path):
+    guard = AccessGuard(tmp_path / "access.json")
+    guard.set_pin("2468")
+    for _ in range(5):
+        with ThreadPoolExecutor(16) as pool:
+            tokens = list(pool.map(lambda i: guard.sign_in(f"10.0.0.{i}", "2468"), range(16)))
+        again = AccessGuard(tmp_path / "access.json")
+        assert all(tokens) and all(again.signed_in(t) for t in tokens)
