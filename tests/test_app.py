@@ -400,6 +400,7 @@ def test_two_saves_at_once_leave_no_connection_or_worker_behind(tmp_path, worker
     async def scenario():
         app = make_app(tmp_path, config("cam1"))
         await app.start()
+        rev = app.config_rev
         try:
             for link in StubLink.made:
                 link.close_takes = 0.05
@@ -410,11 +411,39 @@ def test_two_saves_at_once_leave_no_connection_or_worker_behind(tmp_path, worker
             current = [s.link for s in app.sessions.values()]
             assert [lk for lk in StubLink.made if lk not in current and not lk.closed] == []
             assert set(app.sessions) == {"cam1", "cam3"} and len(workers.alive) == 1
-            assert app.config_rev == 2
+            assert app.config_rev == rev + 2
         finally:
             await app.stop()
 
     asyncio.run(scenario())
+
+
+def test_settings_read_during_an_apply_come_with_their_new_revision(tmp_path, workers, stub_links):
+    """A page that opens Settings while another device applies gets the new settings, so it must get their
+    new revision too: else its own Apply is refused as made on older settings (409) and its edits are lost."""
+
+    async def scenario():
+        app = make_app(tmp_path, config("cam1"))
+        await app.start()
+        rev = app.config_rev
+        try:
+            workers.started[-1][0].join_takes = 0.5  # the old vision worker takes a moment to stop
+            new = config("cam1", "cam2")
+            applying = asyncio.create_task(app.apply_config(new))
+            assert await until(lambda: app.config is new)
+            assert app.config_rev == rev + 1  # (in the middle of the apply)
+            await applying
+            assert app.config_rev == rev + 1
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
+def test_a_settings_page_from_before_a_restart_is_not_taken_for_current(tmp_path, workers, stub_links):
+    """The revision isn't 0 at every start: a page loaded before a restart (and before another device's
+    Apply) would match it again and undo that device's changes."""
+    assert make_app(tmp_path, config("cam1")).config_rev != make_app(tmp_path, config("cam1")).config_rev
 
 
 def test_an_older_settings_page_keeps_the_live_detection_thresholds(tmp_path, workers, stub_links):
@@ -462,10 +491,11 @@ def test_every_new_worker_after_the_first_tells_the_sessions(tmp_path, workers, 
     async def scenario():
         app = make_app(tmp_path, config("cam1", "cam2"))
         await app.start()
+        rev = app.config_rev
         try:
-            assert told == [] and app.config_rev == 0  # the very first worker
+            assert told == []  # the very first worker
             await app.apply_config(other_mode(app))
-            assert told == ["cam1", "cam2"] and app.config_rev == 1
+            assert told == ["cam1", "cam2"] and app.config_rev == rev + 1
             workers.started[-1][0].alive = False
             assert await until(lambda: len(told) == 4)
         finally:

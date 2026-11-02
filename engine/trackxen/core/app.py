@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -103,7 +104,9 @@ class App:
         if getattr(sys, "frozen", False) or os.environ.get("TRACKXEN_GPU_LIBS"):
             self.gpu_libs = GpuLibraries(log=lambda level, message: self.log.event("gpu", message, level=level))
         self.listeners: set = set()  # callables notified on new previews (web sockets)
-        self.config_rev = 0  # counts applied settings, so a page holding older ones can be told
+        # counts applied settings, so a page holding older ones can be told; from a random start, so a page
+        # loaded before a restart doesn't match again
+        self.config_rev = secrets.randbits(48)
         self.collector.extra_problems = self._connection_problems
         self._tasks: list[asyncio.Task] = []
         self._jobs: set[asyncio.Task] = set()  # background jobs (vision worker restarts)
@@ -211,6 +214,7 @@ class App:
         for cam in self.config.cameras:  # measured again by the new worker (a camera without video now: not at all)
             self.counters.forget(f"{cam.id}.")
         self.config = config
+        self.config_rev += 1  # (with the settings: a page that reads them meanwhile gets both)
         await self._stop_worker()
         if not same_cameras:
             for s in closing:
@@ -226,7 +230,6 @@ class App:
         if whole:
             self.inputs.start()
         self.inputs.on_tally()
-        self.config_rev += 1
         self.log.event("settings", "show file loaded" if whole else
                        "settings saved and applied" + ("" if not same_cameras else " (vision restarted)"))
 

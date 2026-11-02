@@ -617,6 +617,10 @@ code. The suite went from 158 to 383 tests.
   older copy answers 409 "The settings were changed on another device. Reload them and try again.",
   and the page loads the current settings. Tools that send no `_rev` are not checked. Show files and
   settings.json never contain it.
+  - Found in a second review: a page that opened Settings during another device's Apply got the new
+    settings with the old revision, so its own Apply was wrongly refused. The revision now changes
+    together with the settings. It also starts at a random number, so a page loaded before a restart
+    isn't taken for current after it.
 - **Kept over an Apply:** Advanced mode detection thresholds changed live, and each camera's Audio
   follow and On Air switches (both still reset when TrackXen restarts).
 - **Show files** keep this PC's performance mode, hardware-test result, model override and engines,
