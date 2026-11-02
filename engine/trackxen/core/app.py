@@ -17,7 +17,7 @@ from trackxen.core.gpu_libs import GpuLibraries
 from trackxen.core.live_inputs import LiveInputs
 from trackxen.core.performance import PRESETS, Preset
 from trackxen.core.session import CameraSession
-from trackxen.core.stats import Counters, Limits, StatsCollector, StatsLog, SystemSampler
+from trackxen.core.stats import Counters, Limits, Problem, StatsCollector, StatsLog, SystemSampler
 from trackxen.core.tracking_settings import View
 from trackxen.rules.audio import AudioFollowConfig
 from trackxen.vision.sources import SourceConfig
@@ -25,9 +25,26 @@ from trackxen.vision.worker import WorkerConfig, start_worker
 
 VIDEO_TIMEOUT = 0.5  # seconds without detections before the watchdog stops a tracking camera
 CONTROL_HZ = 50
+RESTART_FIRST, RESTART_MAX = 2.0, 60.0  # s before a crashed vision worker restarts (doubles while it keeps crashing)
+RESTART_RESET_AFTER = 60.0  # s a worker must have run for the next crash to start from RESTART_FIRST again
+LINK_RETRY_FIRST, LINK_RETRY_MAX = 5.0, 60.0  # s between tries of a camera connection that couldn't be opened
+FREED_QUIET = 1.0  # s without FreeD (on a camera set up for it) before its problem light comes on
+ERROR_LOG_EVERY = 10.0  # s: an error that repeats in a loop is logged at most this often
 
 
 LIVE_CAMERA_FIELDS = {"slots", "active_slot", "preset_links", "faces", "vmix_input"}  # edited through commands
+
+
+def as_bool(value) -> bool:
+    """An on/off value in a command: true or false ("true"/"false" and 1/0 from tools too). Anything else
+    is refused, so a mistyped "off" can never switch something on."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ValueError(f"expected true or false, not {value!r}")
 
 
 def _camera_setup(config: AppConfig) -> list[dict]:
@@ -86,7 +103,15 @@ class App:
         if getattr(sys, "frozen", False) or os.environ.get("TRACKXEN_GPU_LIBS"):
             self.gpu_libs = GpuLibraries(log=lambda level, message: self.log.event("gpu", message, level=level))
         self.listeners: set = set()  # callables notified on new previews (web sockets)
+        self.config_rev = 0  # counts applied settings, so a page holding older ones can be told
+        self.collector.extra_problems = self._connection_problems
         self._tasks: list[asyncio.Task] = []
+        self._jobs: set[asyncio.Task] = set()  # background jobs (vision worker restarts)
+        self._config_lock = asyncio.Lock()  # one settings apply or vision worker restart at a time
+        self._link_retry: dict[str, tuple[float, float, str]] = {}  # camera -> (next try, delay, error)
+        self._restart_delay = 0.0  # delay of the last crash restart (doubles while the worker keeps crashing)
+        self._workers_started = 0
+        self._errors_logged: dict[tuple[str, str], float] = {}  # (where, camera) -> when last logged
         self._reader: threading.Thread | None = None
         self._stopping = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -106,10 +131,16 @@ class App:
         self._start_worker()
         self.inputs.start()
         self._tasks = [asyncio.create_task(self._control_loop()), asyncio.create_task(self._watchdog()),
-                       asyncio.create_task(self.collector.run())]
+                       asyncio.create_task(self.collector.run()), asyncio.create_task(self._retry_links())]
 
     async def _start_cameras(self) -> None:
         for cam in self.config.cameras:
+            old = self.sessions.pop(cam.id, None)
+            if old:  # the same camera id twice: the earlier one's connection is closed, not left running
+                self.log.event("camera", f"camera id {cam.id} is used by more than one camera: only the last one "
+                                         "is used", level="error", source=cam.id)
+                self._link_retry.pop(cam.id, None)
+                await old.link.close()
             link = CameraLink(cam.id, CameraLinkConfig(
                 host=cam.host, visca_port=cam.visca_port, freed_port=cam.freed_port, transport=cam.visca_transport,
                 units_per_degree=cam.units_per_degree, tilt_units_per_degree=cam.tilt_units_per_degree,
@@ -118,51 +149,64 @@ class App:
                 pan_speed_max=len(cam.pan_speeds), tilt_speed_max=len(cam.tilt_speeds)),
                 counters=self.counters, log=self.log)
             if cam.host:
-                try:
-                    await link.start()
-                except OSError as e:
-                    self.log.event("camera", f"can't open camera connection: {e}", level="error", source=cam.id)
+                await self._open_link(cam.id, link)
             self.sessions[cam.id] = CameraSession(cam, link, self.counters, self.log)
             self.sessions[cam.id].face_names = self.faces.names
+
+    async def _open_link(self, camera: str, link: CameraLink) -> None:
+        """Open a camera's connection; one that can't be opened now is tried again later (_retry_links)."""
+        try:
+            await link.start()
+        except Exception as e:  # noqa: BLE001 - e.g. a typo in the address (a ValueError): the rest still starts
+            error = str(e) or type(e).__name__
+            self.log.event("camera", f"can't open camera connection: {error}", level="error", source=camera)
+            self._link_retry[camera] = (time.monotonic() + LINK_RETRY_FIRST, LINK_RETRY_FIRST, error)
 
     async def apply_config(self, config: AppConfig, whole: bool = False) -> None:
         """Save new settings and restart the cameras and vision with them (cameras are stopped first).
 
-        App Settings, faces, preset links, vMix and audio settings are edited live through commands,
-        so the running ones are kept (a settings page may hold an older copy of them) unless `whole`
-        (loading a show file) replaces everything.
+        App Settings, faces, preset links, detection thresholds, vMix and audio settings are edited
+        live through commands, so the running ones are kept (a settings page may hold an older copy
+        of them) unless `whole` (loading a show file) replaces everything. One apply at a time; the
+        new settings are in place before anything is awaited, so commands meanwhile change those.
         """
-        if not whole:
-            running = {c.id: c for c in self.config.cameras}
-            for cam in config.cameras:
-                if cam.id in running:
-                    old = running[cam.id]
-                    cam.slots, cam.active_slot, cam.preset_links = old.slots, old.active_slot, old.preset_links
-                    cam.faces, cam.vmix_input = old.faces, old.vmix_input
-            config.vmix, config.mixer, config.audio = self.config.vmix, self.config.mixer, self.config.audio
-        else:  # a show file from elsewhere: faces it names that this PC doesn't have are left out
-            for cam in config.cameras:
-                cam.faces = [f for f in cam.faces if f.id in self.faces.store.faces]
-        same_cameras = not whole and _camera_setup(config) == _camera_setup(self.config)
-        if same_cameras:  # e.g. only the performance mode changed: the cameras keep running and tracking
-            config.cameras = self.config.cameras
-        if self.config_path:
-            config.save(self.config_path)
-        self._stop_worker()
-        if not same_cameras:
-            for s in self.sessions.values():
-                await s.link.close()
-            self.sessions.clear()
-        self.config = config
-        self.limits.expected_fps.clear()
-        if not same_cameras:
-            await self._start_cameras()
-        self._start_worker()
-        if whole:
-            self.inputs.start()
-        self.inputs.on_tally()
-        self.log.event("settings", "show file loaded" if whole else
-                       "settings saved and applied" + ("" if not same_cameras else " (vision restarted)"))
+        async with self._config_lock:
+            if not whole:
+                running = {c.id: c for c in self.config.cameras}
+                for cam in config.cameras:
+                    if cam.id in running:
+                        old = running[cam.id]
+                        cam.slots, cam.active_slot, cam.preset_links = old.slots, old.active_slot, old.preset_links
+                        cam.faces, cam.vmix_input = old.faces, old.vmix_input
+                config.vmix, config.mixer, config.audio = self.config.vmix, self.config.mixer, self.config.audio
+                config.detection = self.config.detection
+            else:  # a show file from elsewhere: faces it names that this PC doesn't have are left out
+                for cam in config.cameras:
+                    cam.faces = [f for f in cam.faces if f.id in self.faces.store.faces]
+            same_cameras = not whole and _camera_setup(config) == _camera_setup(self.config)
+            if same_cameras:  # e.g. only the performance mode changed: the cameras keep running and tracking
+                config.cameras = self.config.cameras
+            if self.config_path:
+                config.save(self.config_path)
+            closing = [] if same_cameras else list(self.sessions.values())
+            if not same_cameras:
+                self._link_retry.clear()  # (a try still under way closes its connection when it ends)
+            self.config = config
+            await self._stop_worker()
+            if not same_cameras:
+                for s in closing:
+                    await s.link.close()
+                self.sessions.clear()
+            self.limits.expected_fps.clear()
+            if not same_cameras:
+                await self._start_cameras()
+            self._start_worker()
+            if whole:
+                self.inputs.start()
+            self.inputs.on_tally()
+            self.config_rev += 1
+            self.log.event("settings", "show file loaded" if whole else
+                           "settings saved and applied" + ("" if not same_cameras else " (vision restarted)"))
 
     def _on_loop_error(self, loop, context: dict) -> None:
         """Unexpected errors anywhere in the app go to the text log (and the console)."""
@@ -181,18 +225,31 @@ class App:
         if self._stopping:
             return
         self.log.event("vision", "NVIDIA libraries downloaded: restarting the vision worker on the GPU")
-        self._stop_worker()
-        self._start_worker()
+        self._background(self._restart_worker())
+
+    async def _restart_worker(self) -> None:
+        """A new vision worker in place of the running one."""
+        async with self._config_lock:
+            if self._stopping:
+                return
+            await self._stop_worker()
+            self._start_worker()
+
+    def _background(self, coro) -> None:
+        """Run a job in the background (kept until it is done; cancelled when the app stops)."""
+        task = asyncio.ensure_future(coro)
+        self._jobs.add(task)
+        task.add_done_callback(self._jobs.discard)
 
     async def stop(self) -> None:
         self._stopping = True
         if self.gpu_libs:
             self.gpu_libs.stop()
-        for task in self._tasks:
+        for task in [*self._tasks, *self._jobs]:
             task.cancel()
-        for s in self.sessions.values():
+        for s in list(self.sessions.values()):
             await s.link.close()
-        self._stop_worker()
+        await self._stop_worker()
         self.inputs.stop()
         self.log.event("app", "stopped")
 
@@ -202,6 +259,8 @@ class App:
         return PRESETS.get(name, PRESETS["normal"])
 
     def _start_worker(self) -> None:
+        if self._stopping:
+            return
         preset = self.active_preset()
         model = self.config.model_override or f"{preset.model}-{preset.imgsz}"
         cfg = WorkerConfig(
@@ -216,36 +275,58 @@ class App:
         self.worker_started = time.monotonic()
         self._reader = threading.Thread(target=self._read_results, args=(self.worker[2],), daemon=True)
         self._reader.start()
+        self.ndi_baseline.clear()  # the new worker counts NDI frames from 0: all of them are since the last Reset
+        for s in list(self.sessions.values()):
+            s.source_stats = {}
+            restarted = getattr(s, "worker_restarted", None)  # track ids start again at 1 in a new worker
+            if restarted and self._workers_started:
+                try:
+                    restarted()
+                except Exception as e:  # noqa: BLE001 - the worker runs anyway
+                    self._loop_error("vision worker restart", e, s.cfg.id)
+        self._workers_started += 1
         self.faces.worker_started()
         self.log.event("vision", f"vision worker starting: {self.config.performance_mode} mode, "
                                  f"preset {preset.name} ({model})")
 
-    def _stop_worker(self) -> None:
+    async def _stop_worker(self) -> None:
+        """Stop the vision worker. Waiting for it to exit happens off the event loop, so the cameras
+        keep being controlled meanwhile (a worker still loading its model reads the stop late)."""
         if not self.worker:
             return
         proc, commands, _ = self.worker
+        self.worker = None  # from here on its messages are dropped, and the watchdog doesn't take it for a crash
+        self.sampler.app_pids.discard(self.worker_pid)
         try:
             commands.put({"type": "stop"})
-            proc.join(timeout=3)
+            await asyncio.to_thread(proc.join, 3)
         finally:
             if proc.is_alive():
                 proc.terminate()
-        self.sampler.app_pids.discard(self.worker_pid)
-        self.worker = None
+
+    def _current_worker(self, results) -> bool:
+        return self.worker is not None and results is self.worker[2]
 
     def _read_results(self, results) -> None:
-        """Thread: hand worker messages to the event loop."""
+        """Thread: hand this worker's messages to the event loop. Once it is stopped (or replaced) they
+        are only read away, so it can exit, until none come."""
         while not self._stopping:
             try:
                 msg = results.get(timeout=0.5)
             except queue.Empty:
-                if not self.worker or results is not self.worker[2]:
+                if not self._current_worker(results):
                     return
                 continue
             except (EOFError, OSError):
                 return
-            if self._loop:
-                self._loop.call_soon_threadsafe(self._on_message, msg)
+            if self._loop and (self._current_worker(results) or msg.get("type") == "error"):
+                self._loop.call_soon_threadsafe(self._from_worker, results, msg)
+
+    def _from_worker(self, results, msg: dict) -> None:
+        """Messages of the running worker; an earlier worker's are dropped (its track ids mean nothing
+        any more), except its errors, which say why it stopped."""
+        if self._current_worker(results) or msg.get("type") == "error":
+            self._on_message(msg)
 
     # --- worker messages -----------------------------------------------------------------
 
@@ -293,101 +374,237 @@ class App:
         period = 1.0 / CONTROL_HZ
         while True:
             start, t0 = time.monotonic(), time.perf_counter()  # (monotonic ticks every 15.6 ms on Windows)
-            for s in self.sessions.values():
-                s.tick(start)
+            for s in list(self.sessions.values()):
+                try:
+                    s.tick(start)
+                except Exception as e:  # noqa: BLE001 - one camera's failure must not stop the others
+                    self._tick_failed(s, e)
             took = time.perf_counter() - t0
             self.counters.observe("app.control_loop_ms", took * 1000)
             await asyncio.sleep(max(0.0, period - took))
 
+    def _tick_failed(self, s: CameraSession, error: Exception) -> None:
+        """A camera's control step failed: stop that camera rather than leave it moving, and log why."""
+        try:
+            s.link.request(0, 0, 0)
+        except Exception:  # noqa: BLE001 - nothing more to do for it here
+            pass
+        self._loop_error("camera control", error, s.cfg.id)
+
     async def _watchdog(self) -> None:
-        """Safety: stop cameras when detections stop; restart a dead vision worker."""
+        """Safety: stop cameras when detections stop; restart a dead vision worker. Errors are logged
+        and it keeps running."""
         while True:
             await asyncio.sleep(0.1)
-            now = time.monotonic()
-            warming_up = now - self.worker_started < 20  # model loading
-            for s in self.sessions.values():
-                if s.tracking and not s.no_video and now - s.last_tracks_at > VIDEO_TIMEOUT and not warming_up:
-                    s.video_stopped()
-                    try:
-                        await s.link.stop_now()
-                    except Exception as e:  # noqa: BLE001 - camera unreachable: nothing else to do
-                        self.log.event("camera", f"stop failed: {e}", level="error", source=s.cfg.id)
-            if self.worker and not self.worker[0].is_alive() and not self._stopping:
-                self.log.event("vision", "vision worker stopped unexpectedly; restarting", level="error")
-                for s in self.sessions.values():
-                    if s.tracking:
-                        s.video_stopped()
-                        await s.link.stop_now()
-                self.sampler.app_pids.discard(self.worker_pid)
-                self.worker = None
-                await asyncio.sleep(2.0)
+            try:
+                await self._watch()
+            except Exception as e:  # noqa: BLE001 - the safety watchdog must never stop
+                self._loop_error("watchdog", e)
+
+    async def _watch(self) -> None:
+        now = time.monotonic()
+        warming_up = now - self.worker_started < 20  # model loading
+        stop = [s for s in list(self.sessions.values())
+                if s.tracking and not s.no_video and now - s.last_tracks_at > VIDEO_TIMEOUT and not warming_up]
+        if self.worker and not self.worker[0].is_alive() and not self._stopping:
+            # restarted after a pause that doubles while it keeps crashing (e.g. its model file is missing)
+            if now - self.worker_started >= RESTART_RESET_AFTER:
+                self._restart_delay = RESTART_FIRST
+            else:
+                self._restart_delay = min(RESTART_MAX, max(RESTART_FIRST, 2 * self._restart_delay))
+            delay = self._restart_delay
+            self.sampler.app_pids.discard(self.worker_pid)
+            self.worker = None
+            self._background(self._restart_after_crash(delay))  # before the stops: a camera that fails can't prevent it
+            self.log.event("vision", f"vision worker stopped unexpectedly; restarting in {delay:g} s", level="error")
+            stop += [s for s in list(self.sessions.values()) if s.tracking and s not in stop]
+        for s in stop:
+            try:
+                s.video_stopped()
+            except Exception as e:  # noqa: BLE001 - it is stopped below all the same
+                self._loop_error("watchdog", e, s.cfg.id)
+        if stop:
+            await self._stop_cameras(stop)
+
+    async def _restart_after_crash(self, delay: float) -> None:
+        await asyncio.sleep(delay)
+        async with self._config_lock:
+            if self.worker is not None or self._stopping:
+                return  # settings applied meanwhile (or the NVIDIA download) already started one
+            try:
                 self._start_worker()
+            except Exception as e:  # noqa: BLE001 - e.g. no memory for a new process: try again later
+                self._loop_error("vision worker restart", e)
+                self._restart_delay = min(RESTART_MAX, max(RESTART_FIRST, 2 * self._restart_delay))
+                self._background(self._restart_after_crash(self._restart_delay))
+
+    async def _stop_cameras(self, sessions: list[CameraSession]) -> None:
+        """Stop these cameras now, all at once: one that doesn't answer doesn't hold up the others."""
+        results = await asyncio.gather(*(s.link.stop_now() for s in sessions), return_exceptions=True)
+        for s, result in zip(sessions, results):
+            if isinstance(result, BaseException):
+                self._log_error("camera", f"stop failed: {result}", s.cfg.id)
+
+    async def _retry_links(self) -> None:
+        """Camera connections that couldn't be opened (camera off, name not resolvable yet, FreeD port
+        taken) are tried again: after LINK_RETRY_FIRST s, then less and less often (LINK_RETRY_MAX)."""
+        while True:
+            await asyncio.sleep(min(1.0, LINK_RETRY_FIRST))
+            for camera, entry in list(self._link_retry.items()):
+                try:
+                    await self._retry_link(camera, entry)
+                except Exception as e:  # noqa: BLE001 - keep trying the others
+                    self._loop_error("camera connection", e, camera)
+
+    async def _retry_link(self, camera: str, entry: tuple[float, float, str]) -> None:
+        due, delay, error = entry
+        s = self.sessions.get(camera)
+        if s is None:
+            self._link_retry.pop(camera, None)
+            return
+        if time.monotonic() < due:
+            return
+        link = s.link
+        link.visca.close()  # whatever the last try left open
+        try:
+            await link.start()
+        except Exception as e:  # noqa: BLE001 - still not there: later
+            if self._link_retry.get(camera) is not entry:  # settings applied meanwhile
+                link.visca.close()
+                return
+            message, delay = str(e) or type(e).__name__, min(LINK_RETRY_MAX, 2 * delay)
+            self._link_retry[camera] = (time.monotonic() + delay, delay, message)
+            if message != error:
+                self.log.event("camera", f"can't open camera connection: {message}", level="error", source=camera)
+            return
+        if self._link_retry.get(camera) is not entry or self.sessions.get(camera) is not s:
+            await link.close()  # settings applied meanwhile: this connection isn't used any more
+            return
+        del self._link_retry[camera]
+        self.log.event("camera", "camera connection opened", source=camera)
+
+    def _connection_problems(self) -> list[Problem]:
+        """Problem lights for the connections (the statistics add them once a second, with hysteresis): a
+        camera not answering VISCA, FreeD stopped on a camera set up for it, vMix or the mixer not connected."""
+        out = []
+        try:
+            for s in list(self.sessions.values()):
+                cam, link = s.cfg, s.link
+                if not cam.host:
+                    continue  # not set up for control (yet)
+                if not link.visca_ok:
+                    why = link.last_error or self._link_retry.get(cam.id, (0.0, 0.0, ""))[2]
+                    out.append(Problem("error", cam.id, "camera not answering VISCA" + (f": {why}" if why else "")))
+                elif cam.freed_port and link.freed_age > FREED_QUIET:
+                    out.append(Problem("warning", cam.id, f"FreeD position data not arriving on UDP port {cam.freed_port} "
+                                                          "(the position is asked for over VISCA instead)"))
+            vmix, mixer = self.inputs.vmix, self.inputs.mixer
+            if vmix and not vmix.connected:
+                out.append(Problem("warning", "vmix", f"vMix at {vmix.host} not connected, on-air tally unknown"
+                                   + (f" ({vmix.error})" if vmix.error else "")))
+            if mixer and not mixer.connected:
+                out.append(Problem("warning", "mixer", f"mixer at {mixer.host} not connected: no levels arriving"
+                                   + (f" ({mixer.error})" if mixer.error else "")))
+        except Exception as e:  # noqa: BLE001 - the statistics must keep running
+            self._loop_error("problem lights", e)
+        return out
+
+    def _loop_error(self, where: str, error: Exception, source: str = "") -> None:
+        """An error in a loop that keeps running: logged, the same one at most every ERROR_LOG_EVERY s."""
+        now, key = time.monotonic(), (where, source)
+        if now - self._errors_logged.get(key, float("-inf")) < ERROR_LOG_EVERY:
+            return
+        self._errors_logged[key] = now
+        self._log_error("app", f"unexpected error in the {where}: {error!r}", source)
+
+    def _log_error(self, kind: str, message: str, source: str = "") -> None:
+        try:
+            self.log.event(kind, message, level="error", source=source)
+        except Exception:  # noqa: BLE001 - the log itself may be what fails (disk full): carry on
+            pass
 
     # --- operator commands -------------------------------------------------------------------
 
     async def command(self, cmd: dict) -> dict:
+        if not isinstance(cmd, dict):
+            return {"ok": False, "error": "a command must be a JSON object"}
         kind = cmd.get("type")
-        session = self.sessions.get(cmd.get("camera", ""))
+        if not isinstance(kind, str):
+            return {"ok": False, "error": "the command has no type"}
+        camera = cmd.get("camera", "")
+        session = self.sessions.get(camera) if isinstance(camera, str) else None
         if kind == "stop_all":
-            for s in self.sessions.values():
-                s.set_tracking(False, "STOP ALL")
-                s.move = None
-                try:
-                    await s.link.stop_now()
-                except Exception as e:  # noqa: BLE001 - one unreachable camera must not block the others
-                    self.log.event("camera", f"stop failed: {e}", level="error", source=s.cfg.id)
-            self.log.event("operator", "STOP ALL pressed", level="warning")
+            await self._stop_all()
             return {"ok": True}
-        if kind == "gpu_libs_retry":  # "Download again" after a failed download of NVIDIA's libraries
-            if self.gpu_libs:
-                self.gpu_libs.retry()
-            return {"ok": True}
-        if kind == "connections":  # vMix and mixer addresses: only those links restart
-            for key in ("vmix", "mixer"):
-                if key in cmd:
-                    current = getattr(self.config, key)
-                    setattr(self.config, key, type(current).model_validate({**current.model_dump(), **cmd[key]}))
-            if self.config_path:
-                self.config.save(self.config_path)
-            self.inputs.start()
-            self.inputs.on_tally()
-            self.log.event("settings", f"connections: vMix {self.config.vmix.host or 'off'}, "
-                                       f"mixer {self.config.mixer.host or 'off'}")
-            return {"ok": True}
-        if kind == "audio_settings":  # audio-follow settings and mic mappings (validated, saved)
-            data = {**self.config.audio.model_dump(), **cmd["settings"]}
-            try:
+        try:
+            if kind == "gpu_libs_retry":  # "Download again" after a failed download of NVIDIA's libraries
+                if self.gpu_libs:
+                    self.gpu_libs.retry()
+                return {"ok": True}
+            if kind == "connections":  # vMix and mixer addresses: only those links restart
+                changed = {}
+                for key in ("vmix", "mixer"):  # both checked before either is changed
+                    if key in cmd:
+                        current = getattr(self.config, key)
+                        changed[key] = type(current).model_validate({**current.model_dump(), **cmd[key]})
+                for key, value in changed.items():
+                    setattr(self.config, key, value)
+                if self.config_path:
+                    self.config.save(self.config_path)
+                self.inputs.start()
+                self.inputs.on_tally()
+                self.log.event("settings", f"connections: vMix {self.config.vmix.host or 'off'}, "
+                                           f"mixer {self.config.mixer.host or 'off'}")
+                return {"ok": True}
+            if kind == "audio_settings":  # audio-follow settings and mic mappings (validated, saved)
+                data = {**self.config.audio.model_dump(), **cmd["settings"]}
                 self.config.audio = AudioFollowConfig.model_validate(data)
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            if self.config_path:
-                self.config.save(self.config_path)
-            return {"ok": True, "audio": self.config.audio.model_dump()}
-        if kind == "detection":  # Advanced mode: certainty thresholds
-            values = {**self.config.detection.model_dump(), **cmd.get("settings", {})}
-            self.config.detection = DetectionSettings.model_validate(values)  # validates the ranges
-            if self.worker:
-                self.worker[1].put({"type": "tracker", "settings": self.config.detection.tracker_args()})
-            if self.config_path:
-                self.config.save(self.config_path)
-            self.log.event("settings", f"detection thresholds changed: {self.config.detection.model_dump()}")
-            return {"ok": True, "detection": self.config.detection.model_dump()}
+                if self.config_path:
+                    self.config.save(self.config_path)
+                return {"ok": True, "audio": self.config.audio.model_dump()}
+            if kind == "detection":  # Advanced mode: certainty thresholds
+                values = {**self.config.detection.model_dump(), **cmd.get("settings", {})}
+                self.config.detection = DetectionSettings.model_validate(values)  # validates the ranges
+                if self.worker:
+                    self.worker[1].put({"type": "tracker", "settings": self.config.detection.tracker_args()})
+                if self.config_path:
+                    self.config.save(self.config_path)
+                self.log.event("settings", f"detection thresholds changed: {self.config.detection.model_dump()}")
+                return {"ok": True, "detection": self.config.detection.model_dump()}
+        except (ValueError, KeyError, TypeError) as e:  # bad values (pydantic errors are ValueErrors)
+            return {"ok": False, "error": str(e) or type(e).__name__}
         if session is None:
             return {"ok": False, "error": "unknown camera"}
         try:
             reply = self._camera_command(session, kind, cmd)
-        except (ValueError, KeyError, IndexError, TypeError) as e:  # bad values (pydantic errors are ValueErrors)
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError) as e:  # bad values (also in a patch)
             reply = {"ok": False, "error": str(e)}
         reply["rev"] = session.settings_rev  # lets a page tell its own settings changes from others'
         return reply
 
+    async def _stop_all(self) -> None:
+        """STOP ALL, the operator's safety stop. On every camera: Auto Tracking off, pending moves and audio
+        cues dropped, and audio-follow off, so the next microphone can't start it all again (the operator
+        switches it back on); then every camera is stopped at once (one that doesn't answer doesn't hold
+        up the others)."""
+        sessions = list(self.sessions.values())
+        for s in sessions:
+            s.move, s.cue, s.audio_follow = None, None, False
+            try:
+                s.set_tracking(False, "STOP ALL")
+            except Exception as e:  # noqa: BLE001 - it is stopped below all the same
+                self._log_error("operator", f"STOP ALL: {e!r}", s.cfg.id)
+        self.inputs.follow.waiting.clear()  # mics waiting for a free camera
+        await self._stop_cameras(sessions)
+        self.log.event("operator", "STOP ALL pressed: tracking and audio-follow off on every camera", level="warning")
+
     def _camera_command(self, session: CameraSession, kind: str, cmd: dict) -> dict:
         index = int(cmd.get("index", 0))
         if kind == "on_air":  # the manual on-air switch: true, false, or null to follow vMix
-            session.set_on_air(None if cmd.get("on") is None else bool(cmd["on"]))
+            session.set_on_air(None if cmd.get("on") is None else as_bool(cmd["on"]))
             return {"ok": True}
         if kind == "audio_follow":
-            session.audio_follow = bool(cmd["on"])
+            session.audio_follow = as_bool(cmd["on"])
             return {"ok": True}
         if kind == "vmix_input":  # which vMix input shows this camera (key or number; "" = none)
             session.cfg.vmix_input = str(cmd.get("input", ""))
@@ -403,7 +620,7 @@ class App:
         if kind == "clear_target":
             session.select_id(None)
         elif kind == "tracking":
-            session.set_tracking(bool(cmd["on"]))
+            session.set_tracking(as_bool(cmd["on"]))
         elif kind == "manual":
             session.manual(int(cmd.get("pan", 0)), int(cmd.get("tilt", 0)), int(cmd.get("zoom", 0)))
         elif kind == "preset":
@@ -557,8 +774,10 @@ class App:
         if self.hwtest["running"]:
             return False
         if self.gpu_libs and self.gpu_libs.state in ("checking", "downloading", "failed"):
+            why = (f"they couldn't be downloaded ({self.gpu_libs.error}). Use \"Download again now\" once this PC "
+                   "is online" if self.gpu_libs.state == "failed" else "they are still being downloaded")
             self.hwtest = {"running": False, "report": None,
-                           "lines": ["The hardware test waits for NVIDIA's libraries: they are still being downloaded "
+                           "lines": [f"The hardware test waits for NVIDIA's libraries: {why} "
                                      "(without them it would only measure the processor)."]}
             return False
         from trackxen.core import hwtest

@@ -307,6 +307,7 @@ class StatsCollector:
         self.on_sample, self.interval = on_sample, interval
         self.latest: dict = {}
         self.problems: list[Problem] = []
+        self.extra_problems: Callable[[], list[Problem]] | None = None  # e.g. the app's camera and vMix connections
         self._active: set[tuple[str, str]] = set()
         self._present: dict[tuple[str, str], int] = {}  # consecutive samples with the problem
         self._absent: dict[tuple[str, str], int] = {}  # consecutive samples without an active problem
@@ -319,7 +320,7 @@ class StatsCollector:
         # Never divide counts by less than half an interval (e.g. a tick right after start)
         sample["app"] = self.counters.take(max(now - self._last, 0.5 * self.interval))
         self._last = now
-        problems = self._settle(check_problems(sample, self.limits))
+        problems = self._settle(check_problems(sample, self.limits) + (self.extra_problems() if self.extra_problems else []))
         self.latest, self.problems = sample, problems
         self.log.sample(sample)
         if self.on_sample:
