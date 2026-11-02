@@ -2,13 +2,17 @@
 
   python tools/sim_camera.py          (window 1)
   python -m trackxen --sim            (window 2)
-  python tools/sim_scenarios.py       (all scenarios, about 4 minutes)
+  python tools/sim_scenarios.py       (all scenarios, about 5-6 minutes)
   python tools/sim_scenarios.py fixed halting
 
 Each scenario sets up App Settings slot 5 through TrackXen's own API (as the UI does), watches
 the status for a while and prints PASS or FAIL with what it saw. The virtual speaker walks
 between pan -22, 0 (6 s), 20 (4 s) and 6 (2 s) degrees in a 36-second loop; a second person
-stands still at pan 38. Settings are never saved, so the simulator's settings file is untouched.
+stands still at pan 38. "onair" and "audio" also need tools/fake_devices.py (fake vMix and mixer).
+Slot 5 is reset at the end, and the vMix and mixer settings the scenarios change are put back or
+switched off again. Those vMix and mixer commands save the simulator's own settings file
+(settings-sim*.json, never the real one) as it is at that moment. The tool refuses a camera that
+isn't the simulator's (the installed TrackXen answers on the same port), unless --yes is given.
 """
 
 from __future__ import annotations
@@ -19,6 +23,8 @@ import json
 import sys
 import time
 import urllib.request
+
+from _common import not_simulated
 
 from trackxen.control.controller import head_point
 from trackxen.control.lens import Lens
@@ -93,7 +99,8 @@ def auto_select(api: Api) -> tuple[bool, str]:
     picked = [head_pan(c, t) for c in watch(api, 15, 0.5) for t in c["tracks"] if t["id"] == c["target"] and not t["missed"]]
     excluded = any(z == "excluded" for z in cam["zones"].values())
     ok = bool(picked) and max(picked) < 30
-    return ok, f"target head pan {min(picked):.1f}..{max(picked):.1f}; bystander marked excluded: {excluded}"
+    span = f"{min(picked):.1f}..{max(picked):.1f}" if picked else "never seen"
+    return ok, f"target head pan {span}; bystander marked excluded: {excluded}"
 
 
 def fixed(api: Api) -> tuple[bool, str]:
@@ -279,31 +286,36 @@ def on_air(api: Api) -> tuple[bool, str]:
     """vMix tally (tools/fake_devices.py --no-camera --vmix-input "<this PC> (TRACKXEN SIM 1)" --cycle 8):
     while the camera is on Program it moves more slowly (the on-air top speed is set below the
     speaker's walking speed, so the limit shows)."""
+    config = api.get("/api/config")  # the vMix settings are saved: they are put back at the end
+    vmix_before = config["vmix"]
+    input_before = next(c for c in config["cameras"] if c["id"] == api.camera).get("vmix_input", "")
     api.cmd("connections", vmix={"host": "127.0.0.1", "port": 8099})
-    vmix = None
-    for _ in range(30):
-        vmix = api.get("/api/status").get("vmix")
-        if vmix and vmix["connected"]:
-            break
-        time.sleep(0.2)
-    if not (vmix and vmix["connected"]):
-        return False, "no vMix (start tools/fake_devices.py --no-camera ...)"
-    suggestion = vmix["suggested"].get(api.camera)
-    if not suggestion:
-        return False, "no vMix input matches the simulator's NDI name"
-    api.cmd("vmix_input", input=suggestion)
-    fresh_slot(api, auto_select={"enabled": True, "start_time": 0.5},
-               exclusion_areas={"0": {"enabled": True, "left": 33, "right": 45, "top": 10, "bottom": -14}},
-               on_air={"enabled": True, "speed": 0.1, "retarget": "slow"})  # 3 deg/s: below walking speed
-    api.cmd("tracking", on=True)
-    live, off = [], []
-    states = set()
-    for cam in watch(api, 45, 0.1):
-        states.add(cam["on_air"])
-        if cam["state"] == "tracking":
-            (live if cam["air"] == 1.0 else off if cam["air"] == 0.0 else []).append(abs(cam["command"][0]))
-    api.cmd("vmix_input", input="")
-    api.cmd("connections", vmix={"host": ""})
+    try:
+        vmix = None
+        for _ in range(30):
+            vmix = api.get("/api/status").get("vmix")
+            if vmix and vmix["connected"]:
+                break
+            time.sleep(0.2)
+        if not (vmix and vmix["connected"]):
+            return False, "no vMix (start tools/fake_devices.py --no-camera ...)"
+        suggestion = vmix["suggested"].get(api.camera)
+        if not suggestion:
+            return False, "no vMix input matches the simulator's NDI name"
+        api.cmd("vmix_input", input=suggestion)
+        fresh_slot(api, auto_select={"enabled": True, "start_time": 0.5},
+                   exclusion_areas={"0": {"enabled": True, "left": 33, "right": 45, "top": 10, "bottom": -14}},
+                   on_air={"enabled": True, "speed": 0.1, "retarget": "slow"})  # 3 deg/s: below walking speed
+        api.cmd("tracking", on=True)
+        live, off = [], []
+        states = set()
+        for cam in watch(api, 45, 0.1):
+            states.add(cam["on_air"])
+            if cam["state"] == "tracking":
+                (live if cam["air"] == 1.0 else off if cam["air"] == 0.0 else []).append(abs(cam["command"][0]))
+    finally:
+        api.cmd("vmix_input", input=input_before)
+        api.cmd("connections", vmix=vmix_before)
     if states != {True, False} or not live or not off:
         return False, f"tally seen {sorted(states)}; samples live {len(live)}, off {len(off)}"
     ok = max(live) < max(off)
@@ -354,7 +366,12 @@ def main(args) -> int:
     else:
         print("TrackXen is not answering")
         return 1
-    cam_cfg = next(c for c in api.get("/api/config")["cameras"] if c["id"] == api.camera)
+    config = api.get("/api/config")
+    if not_simulated(config, [api.camera]) and not args.yes:
+        print(f"{api.camera} isn't the simulator's camera (tools/sim_camera.py): the TrackXen on port {args.port} "
+              "drives real cameras. Add --yes to run the scenarios on it anyway.")
+        return 2
+    cam_cfg = next(c for c in config["cameras"] if c["id"] == api.camera)
     LENS = Lens(cam_cfg["lens"]["hfov_wide"], cam_cfg["lens"]["hfov_tele"], cam_cfg["lens"]["zoom_max"])
     CAMERA.update(host=cam_cfg["host"] or "127.0.0.1", port=cam_cfg["visca_port"],
                   transport=cam_cfg.get("visca_transport", "sony"))
@@ -387,4 +404,5 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("names", nargs="*", help=f"scenarios to run (default: all): {', '.join(SCENARIOS)}")
     p.add_argument("--port", type=int, default=8090)
+    p.add_argument("--yes", action="store_true", help="also when the camera isn't the simulator's (moves a real camera)")
     sys.exit(main(p.parse_args()))

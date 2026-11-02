@@ -4,9 +4,11 @@
   python -m trackxen --sim --sim-cameras 4
   python tools/sim_load.py --minutes 10
 
-Every camera gets auto select on and Auto Tracking on. Once a second the status is read; at the
-end it prints per camera: target visible, detections per second, detection and frame-to-result
-times, frames skipped; for the PC: CPU, GPU, memory growth; and the warnings/errors in the log.
+Every camera gets auto select on and Auto Tracking on (both put back at the end). Once a second
+the status is read; at the end it prints per camera: target visible, detections per second,
+detection and frame-to-result times, frames skipped; for the PC: CPU, GPU, memory growth; and the
+warnings/errors in the log. It refuses cameras that aren't the simulator's (the installed TrackXen
+answers on the same port), unless --yes is given.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import statistics
 import sys
 import time
 import urllib.request
+
+from _common import not_simulated
 
 
 def get(url: str) -> dict:
@@ -36,15 +40,23 @@ def main(args) -> int:
     base = f"http://127.0.0.1:{args.port}"
     status = get(f"{base}/api/status")
     cams = [c["id"] for c in status["cameras"]]
-    for cam in cams:
-        post(f"{base}/api/command", {"type": "slot_settings", "camera": cam,
-                                     "settings": {"auto_select": {"enabled": True, "start_time": 1.0}}})
-        post(f"{base}/api/command", {"type": "tracking", "camera": cam, "on": True})
-    print(f"{len(cams)} cameras tracking; measuring for {args.minutes} min", flush=True)
+    real = not_simulated(get(f"{base}/api/config"), cams)
+    if real and not args.yes:
+        print(f"{', '.join(real)}: not the simulator's cameras (tools/sim_camera.py); the TrackXen on port {args.port} "
+              "drives real cameras. Add --yes to move them anyway.")
+        return 2
     rows = {c: {"visible": 0, "samples": 0, "det": [], "detect": [], "pipe": [], "skipped": [], "states": set()} for c in cams}
     pc = {"cpu": [], "gpu": [], "app_mem": [], "worker_alive": 0}
-    start, last_report = time.monotonic(), time.monotonic()
+    auto_select = {}  # camera -> (App Settings slot, its auto select settings), put back at the end
     try:
+        for cam in cams:
+            slots = get(f"{base}/api/slots/{cam}")
+            auto_select[cam] = (slots["active"], slots["slots"][slots["active"]]["auto_select"])
+            post(f"{base}/api/command", {"type": "slot_settings", "camera": cam,
+                                         "settings": {"auto_select": {"enabled": True, "start_time": 1.0}}})
+            post(f"{base}/api/command", {"type": "tracking", "camera": cam, "on": True})
+        print(f"{len(cams)} cameras tracking; measuring for {args.minutes} min", flush=True)
+        start, last_report = time.monotonic(), time.monotonic()
         while time.monotonic() - start < args.minutes * 60:
             status = get(f"{base}/api/status")
             app = status["stats"].get("app", {})
@@ -71,6 +83,9 @@ def main(args) -> int:
     finally:
         for cam in cams:
             post(f"{base}/api/command", {"type": "tracking", "camera": cam, "on": False})
+        for cam, (slot, settings) in auto_select.items():
+            post(f"{base}/api/command", {"type": "slot_settings", "camera": cam, "slot": slot,
+                                         "settings": {"auto_select": settings}})
     print(f"\n{'camera':8s} {'visible':>8s} {'det/s':>6s} {'detect ms p50/p95':>18s} {'frame->result p50/p95':>22s} {'skipped/s':>9s}")
     for cam, r in rows.items():
         print(f"{cam:8s} {r['visible'] / max(1, r['samples']):8.0%} {statistics.median(r['det'] or [0]):6.1f} "
@@ -97,4 +112,5 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--port", type=int, default=8090)
     p.add_argument("--minutes", type=float, default=5.0)
+    p.add_argument("--yes", action="store_true", help="also when the cameras aren't the simulator's (moves real cameras)")
     sys.exit(main(p.parse_args()))

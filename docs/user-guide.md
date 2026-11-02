@@ -12,8 +12,9 @@ front of people.
 
 - Run the setup program `TrackXen-Setup-0.1.0.exe`. Windows may say "Windows protected your PC"
   (the program isn't signed): **More info** → **Run anyway**. Choose **Install for all users** (needs
-  an administrator; also lets tablets through the Windows Firewall) or **only for me** (no
-  administrator; Windows then asks about the firewall on the first start: allow private networks).
+  an administrator; also lets tablets and the cameras' FreeD position data through the Windows
+  Firewall, on private networks) or **only for me** (no administrator; Windows then asks about the
+  firewall on the first start: allow private networks).
 - An NVIDIA RTX card is recommended; without one TrackXen runs on the processor and can only follow
   people slowly.
 - TrackXen starts in the background (an orange ring in the notification area, near the clock) and
@@ -176,3 +177,4 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 | Tracking stops after someone used the joystick | Wizard page 4: "Restart Tracking After Manual Operation" |
 | Everything slow | Settings → Performance → Light, or run the hardware test |
 | Tablets can't open the page | Windows Firewall: allow TrackXen on private networks (or install for all users) |
+| Statistics → Position shows "VISCA" for a P400 (no FreeD arrives) | The camera's FreeD output must go to this PC's address and the port in Settings → Cameras; Windows Firewall: allow TrackXen on private networks (or install for all users) |

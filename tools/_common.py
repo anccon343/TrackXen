@@ -26,3 +26,16 @@ def write_csv(path: Path, header: list[str], rows: list[list]) -> None:
 def parse_host_port(text: str, default_port: int) -> tuple[str, int]:
     host, _, port = text.partition(":")
     return host, int(port) if port else default_port
+
+
+def not_simulated(config: dict, cameras: list[str]) -> list[str]:
+    """The cameras (ids) that aren't virtual ones from tools/sim_camera.py (NDI "TRACKXEN SIM n" on
+    this PC), from TrackXen's settings (GET /api/config). The installed TrackXen answers on the same
+    port as `python -m trackxen --sim`, so the simulator tools check this before they move anything."""
+    by_id = {c.get("id"): c for c in config.get("cameras", [])}
+
+    def simulated(c: dict) -> bool:
+        local = str(c.get("host") or "127.0.0.1").lower() in ("127.0.0.1", "localhost", "::1")
+        return local and "TRACKXEN SIM" in str(c.get("ndi") or "").upper()
+
+    return [cam for cam in cameras if not simulated(by_id.get(cam, {}))]

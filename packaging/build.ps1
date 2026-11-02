@@ -17,7 +17,12 @@ Write-Host "2/3 TrackXen.exe"
 if ($LASTEXITCODE) { throw "NVIDIA download list out of date: run tools\gpu_libs_manifest.py" }
 & $python -m PyInstaller packaging\trackxen.spec --noconfirm --distpath dist --workpath build
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
-$nvidia = Get-ChildItem dist\TrackXen -Recurse -Include "cublas*.dll", "cudnn*.dll", "nvinfer*.dll", "cudart*.dll"
+# a copy in the program would be loaded instead of the checked download: every file of the download
+# list, and other versions of the same NVIDIA libraries
+$listed = (Get-Content engine\trackxen\core\assets\gpu-libs.json -Raw | ConvertFrom-Json).files | ForEach-Object { ($_.path -split "/")[-1] }
+$nvidia = Get-ChildItem dist\TrackXen -Recurse -File | Where-Object {
+    ($listed -contains $_.Name) -or ($_.Name -match "^(cublas|cudart|cudnn|cufft|curand|nvinfer|nvjitlink|nvonnxparser|nvrtc).*\.dll$")
+}
 if ($nvidia) { throw "NVIDIA DLLs got into the program (they are downloaded on first start): $($nvidia.Name -join ', ')" }
 $size = (Get-ChildItem dist\TrackXen -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ("dist\TrackXen: {0:N0} MB" -f ($size / 1MB))
