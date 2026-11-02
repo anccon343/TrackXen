@@ -187,6 +187,69 @@ def test_a_drive_whose_answer_was_lost_is_stopped_again():
     asyncio.run(run())
 
 
+def drop_first_stop(cam: FakeCamera) -> list:
+    """The camera never hears the first pan/tilt stop drive (one lost packet); later ones get through."""
+    dropped, handle = [], cam._handle
+
+    def lossy(msg, addr, seq):
+        if msg[1:4] == DRIVE and msg[6] == 3 and msg[7] == 3 and not dropped:
+            dropped.append(msg)
+            return
+        handle(msg, addr, seq)
+
+    cam._handle = lossy
+    return dropped
+
+
+def test_stop_now_sends_a_lost_stop_again_after_an_absolute_move():
+    """K47, STOP ALL and the watchdog during an absolute move (goto, preset): the speed sent is already "stopped",
+    so only stop_now marking it unsure gets the lost stop sent again; else the camera finishes the move."""
+    async def run():
+        cam = FakeCamera(**ptzoptics_settings())
+        link = ptz_link(await cam.start("127.0.0.1", 0))
+        await link.start()
+        try:
+            await link.goto(100.0, 0.0, pan_speed=2)
+            assert await wait_for(lambda: cam.state.target is not None and cam.state.pan > 0.1)
+            dropped = drop_first_stop(cam)
+            with pytest.raises(visca.ViscaError):
+                await link.stop_now()
+            assert dropped
+            assert await wait_for(lambda: cam.state.target is None, 1.0)  # the stop went out again
+            pan = cam.state.pan
+            await asyncio.sleep(0.3)
+            assert cam.state.pan == pan
+        finally:
+            await link.close()
+            cam.stop()
+
+    asyncio.run(run())
+
+
+def test_close_sends_a_lost_stop_again():
+    """Nothing talks to the camera after close() (TrackXen quits, or the camera was removed in Settings): a
+    lost stop must be sent again before it returns, or the camera keeps turning and zooming."""
+    async def run():
+        cam = FakeCamera(**ptzoptics_settings())
+        link = ptz_link(await cam.start("127.0.0.1", 0))
+        await link.start()
+        closed = False
+        try:
+            link.request(10, 0, 2)
+            assert await wait_for(lambda: cam.state.pan_rate > 0 and cam.state.zoom_rate > 0)
+            dropped = drop_first_stop(cam)
+            await link.close()
+            closed = True
+            assert dropped
+            assert cam.state.pan_rate == 0.0 and cam.state.zoom_rate == 0.0
+        finally:
+            if not closed:
+                await link.close()
+            cam.stop()
+
+    asyncio.run(run())
+
+
 class MirroredCamera(FakeCamera):
     """A camera whose VISCA pan runs against its picture and FreeD: "right" turns it left, and its VISCA
     positions count to the left (what pan_sign -1 is for)."""

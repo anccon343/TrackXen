@@ -366,6 +366,47 @@ def test_a_camera_id_used_twice_does_not_leave_a_connection_open(tmp_path, worke
     asyncio.run(scenario())
 
 
+def test_quitting_stops_every_camera_at_once_after_the_microphones(tmp_path, workers, stub_links):
+    """The control loop has stopped when the connections close (each one stops its camera first): one camera
+    that doesn't answer must not keep another moving meanwhile, and no microphone may start a camera then."""
+    async def scenario():
+        app = make_app(tmp_path, config("cam1", "cam2", "cam3"))
+        await app.start()
+        closing, inputs_stopped = [], []
+        for s in app.sessions.values():
+            async def close(link=s.link, close=s.link.close):
+                closing.append(link.name)
+                await close()
+            s.link.close = close
+        stop_inputs = app.inputs.stop
+        app.inputs.stop = lambda: (inputs_stopped.append(list(closing)), stop_inputs())
+        app.sessions["cam1"].link.close_takes = app.sessions["cam2"].link.close_takes = 1.0  # not answering
+        live = app.sessions["cam3"].link
+        stopping = asyncio.create_task(app.stop())
+        assert await until(lambda: live.closed, timeout=0.5)  # not after the cameras that don't answer
+        await stopping
+        assert inputs_stopped == [[]]  # the mixer and vMix links closed before any camera
+
+    asyncio.run(scenario())
+
+
+def test_cameras_removed_in_settings_are_stopped_at_once(tmp_path, workers, stub_links):
+    async def scenario():
+        app = make_app(tmp_path, config("cam1", "cam2", "cam3"))
+        await app.start()
+        try:
+            removed = [app.sessions[i].link for i in ("cam1", "cam2")]
+            for link in removed:
+                link.close_takes = 1.0  # cameras that don't answer
+            t0 = time.monotonic()
+            await app.apply_config(config("cam3"))
+            assert all(link.closed for link in removed) and time.monotonic() - t0 < 1.5
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
 # --- settings apply -------------------------------------------------------------------------------
 
 

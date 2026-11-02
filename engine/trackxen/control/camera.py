@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from trackxen.devices import freed, udp, visca
 
 POSE_MAX_AGE = 2.0  # s: an older position is not the camera's position now (FreeD and inquiries both stopped)
+CLOSE_STOP_TRIES = 3  # close() sends the stop up to this many times until the camera acknowledges it
 
 
 @dataclass(frozen=True)
@@ -112,10 +113,13 @@ class CameraLink:
 
     async def close(self) -> None:
         self._closed = True
-        try:
-            await self.stop_now()
-        except Exception:  # noqa: BLE001 - closing anyway
-            pass
+        for _ in range(CLOSE_STOP_TRIES):  # a lost or refused stop is sent again: nothing stops this camera after this
+            try:
+                await self.stop_now()
+                break
+            except Exception:  # noqa: BLE001 - closing anyway
+                for task in self._tasks:  # (it goes out from here at once, not after position inquiries)
+                    task.cancel()
         if self._reconnecting:
             self._reconnecting.cancel()
         for task in self._tasks:

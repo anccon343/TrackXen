@@ -217,8 +217,7 @@ class App:
         self.config_rev += 1  # (with the settings: a page that reads them meanwhile gets both)
         await self._stop_worker()
         if not same_cameras:
-            for s in closing:
-                await s.link.close()
+            await self._close_links(closing)
             # the operator's Audio follow and On Air switches, as they are now (also a STOP ALL meanwhile),
             # go to the new sessions (_start_cameras)
             self._carry = {s.cfg.id: (s.audio_follow, s.on_air_manual) for s in closing}
@@ -272,10 +271,9 @@ class App:
             self.gpu_libs.stop()
         for task in [*self._tasks, *self._jobs]:
             task.cancel()
-        for s in list(self.sessions.values()):
-            await s.link.close()
+        self.inputs.stop()  # first: no microphone starts a camera that is still to be closed
+        await self._close_links(list(self.sessions.values()))  # (nothing else controls the cameras now)
         await self._stop_worker()
-        self.inputs.stop()
         self.log.event("app", "stopped")
 
     def active_preset(self) -> Preset:
@@ -469,6 +467,14 @@ class App:
         for s, result in zip(sessions, results):
             if isinstance(result, BaseException):
                 self._log_error("camera", f"stop failed: {result}", s.cfg.id)
+
+    async def _close_links(self, sessions: list[CameraSession]) -> None:
+        """Close these cameras' connections, each stopping its camera first, all at once: one that doesn't
+        answer doesn't keep the others moving meanwhile."""
+        results = await asyncio.gather(*(s.link.close() for s in sessions), return_exceptions=True)
+        for s, result in zip(sessions, results):
+            if isinstance(result, BaseException):
+                self._log_error("camera", f"closing the connection failed: {result!r}", s.cfg.id)
 
     async def _retry_links(self) -> None:
         """Camera connections that couldn't be opened (camera off, name not resolvable yet, FreeD port
