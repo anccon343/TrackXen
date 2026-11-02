@@ -203,9 +203,13 @@ def test_stream_source_decodes_and_keeps_the_newest_frame(h264_file):
         deadline = time.monotonic() + 10
         while src.frames_received < 90 and time.monotonic() < deadline:  # past the end of the file once
             time.sleep(0.05)
+        connected = src.connected  # False for a moment each time the file is opened again
+        while not connected and time.monotonic() < deadline:
+            time.sleep(0.005)
+            connected = src.connected
         frame = src.latest()
         assert src.frames_received >= 90 and frame is not None and frame.image.shape == (360, 640, 3)
-        assert src.size == (640, 360) and src.codec == "h264" and src.connected
+        assert src.size == (640, 360) and src.codec == "h264" and connected
         assert src.decode_ms is not None and src.decode_ms < 50 and frame.measured > 0
         assert src.ndi_frames_dropped == 0 and src.ndi_frames_total >= 90
     finally:
