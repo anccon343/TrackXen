@@ -26,6 +26,7 @@ class Lens:
         return math.degrees(2 * math.atan(math.tan(math.radians(self.hfov(zoom) / 2)) / self.aspect))
 
     def hfov_for_vfov(self, vfov: float) -> float:
+        vfov = min(vfov, 179.9)  # (tan() wraps negative at 180 degrees: a view that tall is the widest there is)
         return math.degrees(2 * math.atan(math.tan(math.radians(vfov / 2)) * self.aspect))
 
     def zoom_for_hfov(self, hfov: float) -> float:

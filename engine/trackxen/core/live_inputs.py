@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 
+from trackxen.core.session import ANGLE_FIXED, TRACKING
 from trackxen.integrations.vmix import Tally, VmixLink
 from trackxen.integrations.xair import INPUT_CHANNELS, MixerLink
 from trackxen.rules.audio import AudioFollow, CameraState, SpeechDetector
@@ -51,7 +52,10 @@ class LiveInputs:
 
     def _camera_states(self) -> list[CameraState]:
         return [CameraState(s.cfg.id, s.on_air, s.audio_follow, s.tracking, s.target_face, s.manual_at,
-                            s.cue[3] if s.cue else None) for s in self.app.sessions.values()]
+                            s.cue[3] if s.cue else None,
+                            # (while it follows that person: not once lost)
+                            getattr(s, "framing_mic", None) if s.state in (TRACKING, ANGLE_FIXED) else None)
+                for s in self.app.sessions.values()]
 
     def on_levels(self, levels: list[float]) -> None:
         """Mixer levels (about 20 a second): who started speaking, and which camera answers."""

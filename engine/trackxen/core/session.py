@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 
 from trackxen.control.camera import CameraLink, Pose
-from trackxen.control.controller import Controller, Observation, SpeedTable
+from trackxen.control.controller import Controller, Observation, SpeedTable, cut_at_bottom
 from trackxen.control.kalman import AngleKalman
 from trackxen.control.lens import Lens
 from trackxen.core.config import CameraConfig
@@ -105,6 +105,7 @@ class CameraSession:
         self.audio_follow = True  # this camera may answer microphones
         self.manual_at = -1e9  # when the operator last moved this camera or picked its target
         self.cue: tuple[str, str, float, int] | None = None  # audio cue: (face id or "", label, deadline, channel)
+        self.framing_mic: int | None = None  # the mic whose person an answered cue found (until the target changes)
         self.refresh()
 
     @property
@@ -428,6 +429,7 @@ class CameraSession:
         self.head.reset()
         self.shot = None
         self.target_face = None
+        self.framing_mic = None
 
     def _manual_operation(self, what: str) -> None:
         self.counts["manual_operations"] += 1
@@ -537,6 +539,7 @@ class CameraSession:
         self.cue = None
         if not self._is_target(pick.id):
             self.select_id(pick.id, f"audio: {label or f'mic {channel}'}")
+        self.framing_mic = channel
         return True
 
     def _registered_pick(self, slot: AppSettings) -> tuple[int, str] | None:
@@ -577,7 +580,8 @@ class CameraSession:
         self.controller.observe(Observation(captured, shot.x, shot.y, track["box"][3] - track["box"][1],
                                             msg["width"], msg["height"], anchor=shot.anchor, offset=shot.offset,
                                             want_hfov=shot.want_hfov, target_height=shot.target_height,
-                                            zoom_step=shot.zoom_step), pose)
+                                            zoom_step=shot.zoom_step,
+                                            cut_bottom=cut_at_bottom(track["box"], msg["height"])), pose)
         self.last_seen, self.last_seen_captured = now, captured
         if self.lost_since is not None:
             self._event("target", f"target found again: person {self.target_id}")
