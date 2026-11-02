@@ -600,9 +600,9 @@ code. The suite went from 158 to 383 tests (394 with the fixes from a second rev
     merely contains it ("BIRDDOG" in "BIRDDOG-1 (CAM)") is taken when the first search ends (2 s).
   - Found in a third review: a camera still booting after those 2 s (most PTZ cameras) still got
     "PC (CAM10)", until the next Apply. A part that splits a word of a source's name is now never
-    taken: "CAM1" never takes "PC (CAM10)", and camera 1 connects on the next try once it is announced. A saved part that ends inside a word
-    ("BIRDDOG-123" for "BIRDDOG-12345") no longer connects: "NDI source not found" in the log; choose
-    the full name from the list.
+    taken: "CAM1" never takes "PC (CAM10)", and camera 1 connects on the next try once it is
+    announced. A saved part that ends inside a word ("BIRDDOG-123" for "BIRDDOG-12345") no longer
+    connects: "NDI source not found" in the log; choose the full name from the list.
 - Other event-loop stalls removed: host names are looked up off the loop, the stats day file is read
   in pieces (worst loop lateness 1456 ms → 6 ms on a 120 MB file), `/api/log` reads only the end of
   the log, and setting the PIN hashes off the loop.
@@ -649,6 +649,11 @@ code. The suite went from 158 to 383 tests (394 with the fixes from a second rev
   follow and On Air switches (both still reset when TrackXen restarts).
 - **Show files** keep this PC's performance mode, hardware-test result, model override and engines,
   as they already kept its web address. Mic mappings to faces this PC doesn't have are cleared.
+  - Found in a third review: a show file saved by an earlier version with a camera id or FreeD port
+    used twice (the old "Add camera" after a removal) or a port of 0 (an emptied field) was refused
+    with 422, so that venue's file couldn't be loaded at all. Those are now repaired as in
+    settings.json; each repair is a "settings" warning in the log and is listed in the message after
+    loading. Other values that are not valid are still refused, and Apply is as strict as before.
 - **Deleting or wiping faces** also removes them from the audio-follow mic mappings. An audio settings
   page loaded before the delete can't put them back (found while merging).
 - **UI:** "Add camera" takes the first free `camN` and a free FreeD port; changing a camera's type

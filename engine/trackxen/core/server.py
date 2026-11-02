@@ -302,8 +302,9 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
 
     @api.post("/api/show", dependencies=guarded)
     async def load_show(body: dict):
+        notes: list[str] = []  # what a show file saved by an earlier version had repaired
         try:
-            cfg = AppConfig.model_validate(body)
+            cfg = AppConfig.from_show(body, notes)
         except ValidationError as e:
             raise refused(e) from e
         here = app.config  # what belongs to this PC: its web address and what its hardware test found
@@ -311,9 +312,11 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         cfg.performance_mode, cfg.auto_preset = here.performance_mode, here.auto_preset
         cfg.model_override, cfg.engines = here.model_override, list(here.engines)
         app.faces.unmap_mics(cfg.audio)  # faces stay on their PC: mics can't name faces this PC lacks
+        for note in notes:
+            app.log.event("settings", f"show file: {note}", level="warning")
         async with config_lock:
             await app.apply_config(cfg, whole=True)
-        return {"ok": True}
+        return {"ok": True, "notes": notes}
 
     @api.get("/api/discover")
     async def discover():

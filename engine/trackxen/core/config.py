@@ -19,6 +19,7 @@ from trackxen.core.tracking_settings import SLOTS, AppSettings, FiniteModel, Pre
 from trackxen.rules.audio import AudioFollowConfig
 
 Port = Annotated[int, Field(ge=1, le=65535)]
+PORT_FIELDS = ("port", "visca_port", "freed_port", "web_port")  # (earlier versions saved 0 for an emptied one)
 Speed = Annotated[float, Field(gt=0.0)]  # degrees per second of one VISCA speed step
 
 
@@ -237,13 +238,24 @@ class AppConfig(FiniteModel):
     @classmethod
     def _read(cls, path: Path, notes: list[str]) -> AppConfig:
         """Settings as saved (json.dumps); a value refused now goes back to its default, noted."""
-        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls._repaired(json.loads(path.read_text(encoding="utf-8")), notes, lambda error: True)
+
+    @classmethod
+    def from_show(cls, data: dict, notes: list[str]) -> AppConfig:
+        """A show file, checked as strictly as settings sent from the settings page, except for what earlier
+        versions saved and is refused now: a camera id or FreeD port used twice, and a port out of range (0
+        from an emptied field). Those are repaired as in settings.json, noted. Anything else raises."""
+        return cls._repaired(data, notes, _port_out_of_range)
+
+    @classmethod
+    def _repaired(cls, data, notes: list[str], may_forget) -> AppConfig:
+        """Validate `data`, setting a value refused now that `may_forget` takes back to its default, noted."""
         for _ in range(500):  # one refused value at a time
             try:
                 return cls.model_validate(data, context={"notes": notes})
             except ValidationError as e:
                 for error in e.errors(include_url=False):
-                    if _forget(data, error["loc"]):
+                    if may_forget(error) and _forget(data, error["loc"]):
                         notes.append(f"{'.'.join(map(str, error['loc']))}: {error['msg']}; using the default")
                         break
                 else:
@@ -262,6 +274,11 @@ class AppConfig(FiniteModel):
         if path.exists():
             shutil.copyfile(path, path.with_name(path.name + ".bak"))
         tmp.replace(path)
+
+
+def _port_out_of_range(error: dict) -> bool:
+    loc = error["loc"]
+    return bool(loc) and loc[-1] in PORT_FIELDS and error["type"] in ("greater_than_equal", "less_than_equal")
 
 
 def _forget(data, loc: tuple) -> bool:

@@ -112,7 +112,10 @@ the camera moves.
 10. **Camera Preset Link:** what tracking does after a camera preset is recalled.
 
 Save a **show file** per venue (Settings → System → Save setup) and load it there next time. Loading
-one keeps this PC's own web address, performance mode and hardware test result.
+one keeps this PC's own web address, performance mode and hardware test result. A show file saved by
+an earlier version with a camera id or FreeD port used twice, or a port of 0, is repaired as it loads:
+the later camera gets a free id or no FreeD, the port its default. The message after loading and the
+log say what was changed. Other values that are not valid are refused, and nothing is loaded.
 
 **Settings → Apply** checks the settings first: every port 1-65535 (an empty FreeD port means no
 FreeD), no two cameras with the same id or FreeD port. **Add camera** picks a free number and FreeD

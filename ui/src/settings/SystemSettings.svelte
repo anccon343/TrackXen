@@ -38,9 +38,11 @@
     if (!showFile) return;
     loadingShow = true;
     try {
-      await postJSON("/api/show", JSON.parse(await showFile.text()));
+      const r = await postJSON<{ notes?: string[] }>("/api/show", JSON.parse(await showFile.text()));
       await settings.load();
-      ui.notify("Show file loaded: cameras restarted with it");
+      // a file saved by an earlier version may have needed repairs (a camera id used twice, port 0)
+      ui.notify(r.notes?.length ? `Show file loaded, with changes: ${r.notes.join("; ")}`
+                                : "Show file loaded: cameras restarted with it");
       showFile = null;
     } catch (e) {
       ui.notify(`Couldn't load the show file: ${e}`);

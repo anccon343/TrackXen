@@ -270,6 +270,32 @@ def test_loading_a_show_file_keeps_this_pcs_own_settings(tmp_path):
         ("light", "low", "yolo26n-pose-320", ["cpu"], 8091)
 
 
+def test_a_show_file_from_an_earlier_version_is_repaired_like_the_settings_file(tmp_path):
+    """Earlier versions saved a camera id twice (Add camera after a removal) and port 0 (an emptied port field).
+    Such a venue's show file loads, repaired as settings.json is, and says what was changed; anything else
+    that is not valid is still refused."""
+    client, app, _ = server(tmp_path)
+    show = json.loads(AppConfig().model_dump_json())
+    show["cameras"] = [json.loads(c.model_dump_json()) for c in (CameraConfig(id="cam1", freed_port=40001),
+                                                                  CameraConfig(id="cam3", name="Camera 3", freed_port=40003),
+                                                                  CameraConfig(id="cam3", name="Choir", freed_port=40003))]
+    show["vmix"] = {"host": "", "port": 0}
+    r = client.post("/api/show", json=show)
+    assert r.status_code == 200, r.text
+    cfg, whole = app.applied[-1]
+    assert whole and [(c.id, c.freed_port) for c in cfg.cameras] == [("cam1", 40001), ("cam3", 40003), ("cam2", None)]
+    assert cfg.vmix.port == 8099
+    notes = r.json()["notes"]
+    assert len(notes) == 3 and any("vmix.port" in n for n in notes)
+    assert [(kind, level) for kind, _, level in app.log.events if kind == "settings"] == [("settings", "warning")] * 3
+    show["cameras"][0]["lens"] = {"hfov_wide": 3.0, "hfov_tele": 60.0}  # not something an earlier version saved
+    assert client.post("/api/show", json=show).status_code == 422
+    assert len(app.applied) == 1
+    del show["cameras"][0]["lens"]
+    show["cameras"].append(show["cameras"][0])
+    assert client.post("/api/config", json=show).status_code == 422  # the settings page is still checked strictly
+
+
 def test_a_show_file_does_not_map_mics_to_faces_this_pc_lacks(tmp_path):
     client, app, _ = server(tmp_path)
     here = app.faces.store.add("Pastor", [0.1] * 4, b"")
