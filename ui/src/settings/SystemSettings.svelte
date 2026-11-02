@@ -79,7 +79,7 @@
   <input type="file" accept=".json,application/json" onchange={(e) => (showFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)} />
   <button disabled={!showFile || loadingShow} onclick={loadShow}>{loadingShow ? "Loading…" : "Load setup"}</button>
 </div>
-<p class="dim">Loading replaces every setting and restarts the cameras.</p>
+<p class="dim">Loading replaces the setup and restarts the cameras. This PC keeps its own web address, performance mode and hardware test result.</p>
 
 <h2 class="section">PIN for other devices</h2>
 <p class="dim">When the PIN is on, phones, tablets and other PCs enter it once and then stay signed in. This PC

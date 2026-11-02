@@ -4,9 +4,11 @@ TrackXen points up to four BirdDog P400 cameras at the people on stage by itself
 follows its own person. It works like Canon's Auto Tracking Application, with vMix tally and
 microphone-follow added. This guide is for running it; the technical notes are in `progress.md`.
 
-**Safety first:** the red **STOP ALL** button (top right, on every screen) stops tracking on every
-camera and stops every camera at once. Keep a person near it whenever TrackXen moves cameras in
-front of people.
+**Safety first:** the red **STOP ALL** button (top right, on every screen except the PIN screen)
+switches Auto Tracking and Audio follow off on every camera and stops every camera at once. Keep a
+person near it whenever TrackXen moves cameras in front of people. After STOP ALL, switch Audio follow
+on again per camera (tracking panel) when you want it. If the button can't reach TrackXen, a message
+says so: press it again.
 
 ## 1. Installing and starting
 
@@ -19,8 +21,11 @@ front of people.
   people slowly.
 - TrackXen starts in the background (an orange ring in the notification area, near the clock) and
   opens its page in the browser. Right-click the ring: **Open TrackXen**, **Open the logs folder**,
-  **Quit TrackXen**.
-- Tablets and phones on the same network: open `http://<this PC's address>:8090`.
+  **Quit TrackXen**. Starting TrackXen again while it runs just opens its page.
+- If TrackXen can't start (for example another program uses port 8090), a message says why and
+  there is no ring.
+- Tablets and phones on the same network: open `http://<this PC's address>:8090`, or the PC's name
+  (`http://<PC name>:8090`). Other names, such as an alias set up on the router, are refused.
 - **The first start needs the internet:** TrackXen downloads NVIDIA's graphics libraries for this
   card (about 1.5 GB, once per PC; the welcome page shows the progress). Then it prepares the
   graphics engine for the card (2-10 minutes). TrackXen already works meanwhile, more slowly.
@@ -77,7 +82,8 @@ their position 20 times a second over VISCA.
 - **Pick the person** by clicking them in the picture ("Tracking Target Select" mouse mode). With Auto
   Select or registered faces switched on, TrackXen picks by itself.
 - **App Settings 1-5:** five complete tracking setups per camera (for example "Sermon", "Worship",
-  "Panel"). Switch with the five buttons; changes work at once and **Save** keeps them.
+  "Panel"). Switch with the five buttons; changes work at once and **Save** keeps them. Other saves
+  (faces, connections, a vMix input, Apply in Settings) also keep the changes made so far.
 - The **PTZ** tab moves the camera by hand. Moving a camera by hand (here, in vMix, with a joystick)
   stops tracking, unless "Restart Tracking After Manual Operation" is on (wizard step 4).
 
@@ -105,7 +111,14 @@ the camera moves.
    Ask people first; the data stays on this PC.
 10. **Camera Preset Link:** what tracking does after a camera preset is recalled.
 
-Save a **show file** per venue (Settings → System → Save setup) and load it there next time.
+Save a **show file** per venue (Settings → System → Save setup) and load it there next time. Loading
+one keeps this PC's own web address, performance mode and hardware test result.
+
+**Settings → Apply** checks the settings first: every port 1-65535 (an empty FreeD port means no
+FreeD), no two cameras with the same id or FreeD port. **Add camera** picks a free number and FreeD
+port. If another device applied settings since this page loaded them, Apply says "The settings were
+changed on another device. Reload them and try again." and loads the current settings: make your
+changes again. The Audio follow and On Air switches stay as they were over an Apply.
 
 ## 5. Registering a face
 
@@ -124,7 +137,12 @@ higher in the list wins when two registered people appear.
 - **Settings → Audio follow:** switch on the microphones to follow. For each: who uses it (a
   registered face) and, per camera, the preset that shows their place. When that microphone starts
   speaking, a camera that is not live goes there and frames the person. A camera you just moved by
-  hand is left alone.
+  hand (here, with a preset, in vMix or with a joystick) is left alone for a while.
+- A microphone cue still waiting for its person is dropped when you click a person, use the joystick
+  or move the camera, recall a preset, switch Auto Tracking off, or switch Audio follow off for that
+  camera. STOP ALL switches Audio follow off on every camera.
+- **If vMix is not connected,** each camera keeps its last on-air state until vMix reports again,
+  and a problem light says so. Use the **On Air** switch if needed.
 
 ## 7. Buttons on a Stream Deck (Bitfocus Companion)
 
@@ -142,11 +160,18 @@ If the PIN is on (section 9), also add the header `X-TrackXen-PIN` with the PIN 
 | On air: on / off / follow vMix | `{"type": "on_air", "camera": "cam1", "on": true}` (`false`, or `null`) |
 | Audio follow on / off | `{"type": "audio_follow", "camera": "cam1", "on": true}` |
 
+On/off values are `true` or `false` (`1`/`0` and `"true"`/`"false"` also work); anything else is
+refused.
+
 ## 8. Statistics and logs
 
 - The bottom bar always shows detection time, GPU and CPU load, and problem lights. **Statistics**
   opens the full table (like vMix's): per camera frame rate, dropped frames, detection times, camera
   replies; **History** shows past days' graphs and events, with downloads.
+- A problem light comes on after about 3 s and goes off about 5 s after the problem is gone. Besides
+  the frame rate, GPU, CPU and memory lights: a camera not answering VISCA, FreeD position data not
+  arriving, vMix or the mixer not connected, and log files that can't be written. GPU load and GPU
+  temperature have a light each.
 - The log file is written automatically: `%APPDATA%\TrackXen\logs\TrackXen-YYYYMMDD.log`.
 - **Settings → Performance:** Light (slower PCs, or vMix on the same PC), Auto, HYPER (best and most
   responsive); the hardware test recommends one.
@@ -162,6 +187,10 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 - **Change the PIN** signs every other device out. **Sign out other devices** does that without a new
   PIN, for example after a tablet was lost.
 - Changing or switching off the PIN from another device needs the current PIN.
+- Signing out, **Change the PIN**, **Sign out other devices** and switching the PIN on also close
+  pages already open on other devices; they show the number pad.
+- The TrackXen PC needs no PIN only when its page is opened as `localhost` or `127.0.0.1` (the ring's
+  **Open TrackXen** does that). Opened by the PC's name or address, it asks too.
 
 ## 10. When something is off
 
@@ -171,6 +200,12 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 | A number pad asks for a PIN | Settings → System on the TrackXen PC: the PIN, or switch it off |
 | "No video" on a camera | NDI on in the camera? Same network? Settings → Cameras → Find devices |
 | The camera doesn't move | Is the camera's address right? Statistics → VISCA errors. Is Auto Tracking on? |
+| Problem light "camera not answering VISCA" | Is the camera on and on the network, and its address and VISCA port right? TrackXen keeps trying; the light goes off once it answers |
+| Problem light "FreeD position data not arriving" | As for "Position shows VISCA" below; tracking still works on VISCA positions |
+| Problem light "vMix ... not connected" or "mixer ... not connected" | Is vMix running, or the mixer on? Settings → vMix & mixer: the address |
+| "The settings were changed on another device" | The page has loaded the current settings: make your changes again and Apply |
+| "No video", and the log says "NDI name ... matches several sources" | Settings → Cameras: choose the camera's full NDI name from the list |
+| A "settings" warning in the log after a start | settings.json was damaged or held a value no longer accepted, and TrackXen repaired it (a damaged file is kept as `settings.json.broken-<time>`; the last good copy `settings.json.bak` or the defaults are used). Check the settings |
 | It follows the wrong person | Click the right one; add exclusion or halting areas; lower the sensitivity |
 | Too jumpy | Lower the sensitivity, widen the Pan/Tilt Halting Area, use a fixed area at the podium |
 | Too slow to follow | Raise the sensitivity, make the Pan/Tilt Halting Area smaller |

@@ -24,7 +24,7 @@
   {#if perf}<span class="mode" title="Performance mode (Settings → Performance)">{perf.mode.toUpperCase()}{perf.mode === "auto" ? ` · ${perf.preset}` : ""}</span>{/if}
   <span class="badge conn {live.connected ? 'state-tracking' : 'state-no_video'}" title={live.connected ? "Connected" : "Disconnected"}>
     <span class="txt">{live.connected ? "Connected" : "Disconnected"}</span></span>
-  <button class="danger" onclick={stopAll} title="Stop tracking and stop every camera">STOP ALL</button>
+  <button class="danger" onclick={stopAll} title="Stop tracking and audio-follow, and stop every camera">STOP ALL</button>
 </header>
 
 <style>

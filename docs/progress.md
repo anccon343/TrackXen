@@ -13,7 +13,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\sim_load.py          (optional, with --sim-cameras 4: all cameras at once, measured)
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
-.venv\Scripts\python -m pytest                  (158 tests)
+.venv\Scripts\python -m pytest                  (383 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -498,6 +498,236 @@ The research is in research.md 1.9.
 - `calibrate`, `zoom-range`, the speed sweeps
 - `stream_probe --delay` (the RTSP delay)
 - main or sub stream
+
+## 2026-11-02: fixes from a code review
+
+A code review listed defects across the engine, the UI, the tools and the installer. They were
+fixed in ten groups (session, control, devices, vision, ops, server, lifecycle, app, UI, tools and
+docs) and merged here. Where a test could show a defect, it was written first and failed on the old
+code. The suite went from 158 to 383 tests.
+
+**Safety: the watchdog and the control loop keep running**
+- **Watchdog:** each check runs inside try/except. An error is logged (the same one at most every
+  10 s) and the watchdog carries on. Before, one camera that didn't answer the stop ended the
+  watchdog for good: no more vision restarts and no more no-video stops.
+  - A crashed vision worker's restart is scheduled before any camera is stopped, and the cameras are
+    stopped all at once.
+  - The restart waits 2 s, doubling up to 60 s while the worker keeps crashing, and back to 2 s once
+    a worker has run for 60 s. The log says "restarting in N s".
+- **Control loop:** a camera whose control step fails is sent a stop, and the error is logged. The
+  other cameras are still controlled. Before, one error (for example `math.log(0)` from a person
+  height of 0) stopped the loop for every camera.
+- **Applying settings** no longer freezes camera control while the old vision worker exits (with a
+  worker that took 1 s to exit: a 1.02 s stall before, under 0.3 s now). Applies run one at a time.
+  Commands sent during an apply change the new settings.
+- **Log writes:** a full disk, a deleted logs folder or a locked file no longer raises out of the log.
+  Before, that could end the control loop with a camera moving. A "pc" warning says the log files
+  can't be written, and a deleted folder is made again.
+- **Ctrl+C or SIGTERM** (`python -m trackxen`) now lets App.stop() finish: cameras stopped, worker
+  ended, exit code 0. A second Ctrl+C while stopping is ignored. Before, SIGTERM killed the process
+  without stopping anything.
+
+**Safety: STOP ALL holds**
+- **STOP ALL** now, on every camera: Auto Tracking off, pending moves and microphone cues dropped,
+  and **audio-follow off**. Mics waiting for a free camera are forgotten. All cameras are stopped at
+  the same time, so one that doesn't answer doesn't hold up the others (tested: the second camera
+  stopped within 0.15 s while the first took 1 s and failed). Log: "STOP ALL pressed: tracking and
+  audio-follow off on every camera". The operator switches audio-follow back on per camera.
+- Before, the next microphone could recall a preset and start tracking again right after STOP ALL.
+- **During a settings apply:** each camera's Audio follow and On Air switches carry over to the
+  cameras the apply makes again. A STOP ALL pressed meanwhile is no longer undone, also for cameras
+  made after it (found while merging).
+- **In the UI:** while the live connection reconnects, STOP ALL goes over HTTP. If it can't reach
+  TrackXen, the page says "STOP ALL didn't reach TrackXen (...): press it again".
+- **Auto Tracking off** also cancels a pending "start tracking at the preset" (Camera Preset Link On,
+  or an audio cue) and a microphone cue still waiting for its person.
+
+**Safety: a camera left moving**
+- **Failed commands:** when an absolute move, a preset recall or a stop fails (or its answer is
+  lost), the speeds the camera runs at count as unknown, so the stop is sent again. Before, a drive
+  whose ACK was lost kept the camera turning at 11.5 °/s in the test.
+- **Slow corrections:** an axis whose wanted speed rounds to step 0 now settles inside the dead zone,
+  or moves at the slowest step outside it. Before, it could stay "moving" at step 0 for good, which
+  also blocked Display Size and Auto Zoom (46 of 288 simulated latency cases; 0 now).
+- **Old positions:** a position older than 2 s (FreeD and VISCA inquiries both stopped) counts as
+  unknown. Tracking sends stops instead of steering by a frozen position.
+- **Acceleration limit:** two commands at the same moment no longer skip it.
+- **After a watchdog "no video" stop** the camera accelerates from standstill again.
+- **Hold-to-move buttons** stop the camera when the button is let go or removed (panel closed, PIN
+  screen), when the tab is hidden or loses focus, and when the connection drops (the stop then goes
+  over HTTP).
+- **Reconnects:** a reconnect no longer cancels a move to a preset or position under way; a drive is
+  sent again on the new connection. Only one reconnect runs at a time, and closing a camera during
+  one leaves no connection open.
+- **Camera connections that can't be opened at start** (camera off, name not resolvable yet, FreeD
+  port taken, a typo in the address) no longer stop TrackXen. The camera's loops start anyway and
+  reconnect; the app tries what is still missing again after 5 s, then less often up to 60 s.
+  - Found while merging: the app's retries closed the connection the camera link had made meanwhile
+    and started another pair of loops each time, so the camera flapped between "answering" and
+    "not answering". A retry now only opens what is missing (the FreeD port).
+
+**Safety: NDI freezes**
+- `find_sources()` and `NdiReceiver.start()` no longer wait inside the NDI library with the GIL held.
+  A 1 s search used to pause every other thread for 1.0 s; now about 5 ms.
+- **A missing NDI or capture source** is opened on its own thread, so the other cameras' detection
+  goes on. Before, one missing source held up detection for every camera for 0.5 s every 5 s, and the
+  watchdog stopped the tracking cameras. It is tried again after 5 s, doubling up to 60 s.
+- **NDI names:** a full "HOST (STREAM)" name is matched only exactly (case does not matter), so
+  "ALTAR (CAM)" no longer takes "SIDEALTAR (CAM)". A partial name that matches several sources is
+  refused with "NDI name X matches several sources: A, B (choose one of them)".
+- Other event-loop stalls removed: host names are looked up off the loop, the stats day file is read
+  in pieces (worst loop lateness 1456 ms → 6 ms on a 120 MB file), `/api/log` reads only the end of
+  the log, and setting the PIN hashes off the loop.
+
+**Security**
+- **DNS rebinding:** the server answers only when opened by an IP address, localhost or this PC's
+  own names. Anything else gets 403 "Open TrackXen by this PC's IP address or name.", and the live
+  connection is closed. With the PIN on, this PC needs no PIN only when opened as localhost or
+  127.0.0.1 (the tray does that).
+- **Cross-site requests:** any `/api` request a browser marks as coming from another site gets 403,
+  GET included (for example discovery). Companion and the tools send no such header.
+- **Signing out** a device, "Sign out other devices", changing the PIN and switching it on now also
+  close pages that are already open. They reconnect and show the PIN screen if they need it.
+- **PIN tries** are counted under a lock before the slow comparison, so 20 PINs sent at once no longer
+  get 20 tries. Saving `access.json` from two sign-ins at once no longer fails.
+- **Face delete** takes only registered face ids, so a request can't name another file.
+- **Escaping:** the `/test` page escapes camera names and problem texts. The text log writes line
+  breaks and control characters in names as escapes, so a name can't forge a log line.
+- **Stream addresses:** errors in the log and the UI never show the user name or password of an RTSP
+  address.
+
+**Settings**
+- **Checked before they are applied** (HTTP 422, nothing changes): ports must be 1-65535 (FreeD may be
+  empty); camera ids must be unique; two cameras can't share a FreeD port; composition values within
+  their ranges; lens, speed-table and units-per-degree values that would crash; no NaN or infinite
+  numbers. Found while merging: a NaN in the settings sent made the 422 answer itself fail with a 500.
+- **settings.json** is written to a temporary file, flushed and then swapped in; the previous copy is
+  kept as `settings.json.bak`. A damaged file (power cut, hand edit) no longer stops TrackXen: it is
+  kept as `settings.json.broken-<time>`, and the last good copy or the defaults are used. Values no
+  longer accepted go back to their defaults (a duplicate camera id gets the next free `camN`, a shared
+  FreeD port is set to none). Each repair is a "settings" warning in the log.
+- **Settings changed on another device:** `GET /api/config` carries a revision (`_rev`). Applying an
+  older copy answers 409 "The settings were changed on another device. Reload them and try again.",
+  and the page loads the current settings. Tools that send no `_rev` are not checked. Show files and
+  settings.json never contain it.
+- **Kept over an Apply:** Advanced mode detection thresholds changed live, and each camera's Audio
+  follow and On Air switches (both still reset when TrackXen restarts).
+- **Show files** keep this PC's performance mode, hardware-test result, model override and engines,
+  as they already kept its web address. Mic mappings to faces this PC doesn't have are cleared.
+- **Deleting or wiping faces** also removes them from the audio-follow mic mappings. An audio settings
+  page loaded before the delete can't put them back (found while merging).
+- **UI:** "Add camera" takes the first free `camN` and a free FreeD port; changing a camera's type
+  keeps its FreeD port. Emptied or out-of-range ports, shared FreeD ports and duplicate ids are
+  refused with a message before anything is sent. Settings reloads each time it opens, unless this
+  device has changes not applied yet.
+- **Companion and the API:** on/off values must be true or false (1/0 and "true"/"false" are also
+  taken); anything else is refused. Before, `"false"` switched tracking on. Malformed commands get
+  `{ok: false, error}` instead of an HTTP 500.
+
+**Problem lights** (same hysteresis: shown after 3 s, cleared after 5 s)
+- New: "camera not answering VISCA" (error, cameras with an address); "FreeD position data not
+  arriving on UDP port N" (warning, cameras with a FreeD port, while VISCA answers); "vMix at X not
+  connected, on-air tally unknown"; "mixer at X not connected: no levels arriving"; "log files can't
+  be written".
+- GPU load and GPU temperature are separate problems; a second GPU is "GPU 2". A problem that gets
+  worse (warning to error) is logged once more.
+- "Camera answering VISCA" also comes back from answered position polls, so a few lost inquiries no
+  longer add up to "not answering".
+
+**Tracking and vision**
+- **After the vision worker restarts** (watchdog, Apply, NVIDIA download) the target is found again by
+  its registered face or near where it was last seen, not by its number: track numbers start at 1 in
+  a new worker. Boxes from the old worker disappear until new detections arrive.
+- **Identity lock:** if the target's box starts being recognised as another registered face (the
+  tracker swapped people), the camera holds and goes back to the locked person wherever their face
+  appears.
+- **Fixed viewing angle areas** no longer move the camera while the joystick is held or tracking is
+  paused after a manual move.
+- **Audio-follow:** the "left alone after a manual move" time also starts on a preset recall and when
+  another controller (vMix, a joystick) moves the camera. A waiting cue is dropped when the operator
+  clicks a person, uses the joystick or moves the camera. A camera that found the person at a mic
+  stays "on that person" while it follows them.
+- **Zoom:** a one-time Display Size ends at the zoom limit. After a Multi-Person group the zoom returns
+  to the display size (without Auto Zoom) or ends where the controller stops, so a later hand zoom is
+  not undone. A person cut off by the bottom of the picture is never zoomed into.
+- **Advanced mode thresholds** do what their labels say: the detector threshold follows "Keep
+  tracking down to", "Start tracking at" below "Sure detection" starts tracks, "seen 1 frame" reports
+  a person at once, and the overlap setting applies to weak detections too. Defaults are unchanged.
+- **People:** a speaker in front of a screen showing a large person can be picked up; a face at the
+  edge of someone's head crop is no longer taken as theirs; track ids are kept when a stream's
+  resolution changes.
+- **Errors made visible:** damaged face model files ("face recognition unavailable: ..."), a stream
+  without video ("no video in this stream", retried), raw pose model exports decoded correctly.
+- **Pan/tilt sign:** `pan_sign`/`tilt_sign` -1 now also flip polled positions, and `visca_probe
+  calibrate` no longer suggests -1 when positions count against the drive.
+- **FreeD** from any address other than the camera's own is ignored and counted (`freed_foreign`).
+- **VISCA replies:** an error about an earlier command is no longer taken for a new command's answer.
+  A position reply of the wrong length is an error ("pan/tilt reply is not 8 nibbles: ...") instead of
+  a wrong position.
+- **Face registration:** "<name> registered" shows only once the face is stored, otherwise "No face
+  was registered: try again". Cancel ends the capture. A capture under way carries over to a
+  restarted vision worker, and the frame is switched off even while the connection is down.
+
+**Pages**
+- While another device applies settings, cameras that drop out of the list stay shown for up to 5 s,
+  so pages no longer jump to the Welcome page or to camera 1.
+- After Apply or "Load setup", every device reloads the cameras' App Settings. App Settings commands
+  sent before the selected camera's settings have loaded are refused with a message instead of
+  changing the camera shown before.
+- The PIN screen says "TrackXen is not reachable: try again in a moment" instead of locking up. A
+  refused audio-follow change is undone on screen. A failed "Add cameras" on the Welcome page says
+  why. Choosing a vMix input no longer clears addresses typed but not applied.
+
+**vMix and the mixer**
+- The vMix link no longer stops for good after an unexpected error, a slow input-list answer no
+  longer drops the tally, and renumbered inputs are evaluated again within about 10 s.
+- **vMix not connected:** each camera keeps its last on-air state, including the calm on-air motion,
+  until vMix reports again. With no vMix address set, cameras are off Program as before.
+- A mic waiting for the live camera is forgotten when audio-follow is switched off or the mixer
+  stops sending levels.
+- A malformed mixer address is shown and retried. Without levels the mixer link reopens every 30 s.
+
+**The program, logs and downloads**
+- **TrackXen.exe:** a second start for the same data folder waits for the first and opens its page
+  (lock file `trackxen.lock`). A web port used by another program, or an engine that can't start,
+  shows a message with the reason and no tray icon. Quit works while cameras are still connecting.
+- `--port N` is used for that run only and no longer saved.
+- **Logs** older than `log_keep_days` are removed once a day while TrackXen runs.
+- **Hardware test:** measures on the engine that really loads (a PC without NVIDIA is measured on the
+  processor), with one frame per camera in a batch (lower but realistic numbers for 2-3 cameras), and
+  a true 95th percentile. Its message says when the NVIDIA download failed.
+- **NVIDIA libraries:** an interrupted download resumes where it stopped; GPUs older than Turing
+  download nothing and run on the processor.
+- **Statistics:** a removed camera no longer shows its last frame rate after Apply; "Source dropped"
+  counts start over with each new vision worker.
+- **Installer:** an upgrade replaces the "TrackXen" firewall rule and the `_internal` folder; the build
+  rejects every NVIDIA DLL the download provides. pywin32 is a Windows-only dependency.
+- **Tools:** `sim_test`, `sim_load` and `sim_scenarios` refuse cameras that aren't the simulator's
+  unless `--yes` is given. `sim_test` always switches tracking off at the end, `sim_load` puts each
+  camera's auto select back, and the `onair` scenario puts the vMix settings back. `visca_probe info`
+  only reads.
+  `env_check` fails when its ONNX Runtime check dies. `gpu_libs_manifest` refuses a list that lacks a
+  package's DLLs. A test checks that the version is the same in every file.
+- `docs/plan.md` marks what is not built (body re-ID, the update check, "Stop all cameras" in the tray,
+  DirectML).
+
+**Not changed** (owner decisions, or not measurable here)
+- Whether only Save should write App Settings to disk (any save does now), and a way to discard
+  unsaved changes.
+- When a preset move counts as arrived, and the jump between FreeD and polled VISCA positions: both
+  need measurements on the P400 and the G2.
+- TensorRT engines stay in `%APPDATA%\TrackXen`; moving them forces a rebuild on every install.
+- The group zoom speed steps (2 and 3 are the same under the motion-profile cap): a mapping choice.
+- System sampling off the event loop, a hang check for the vision worker during a TensorRT build, and
+  the hardware test during a TensorRT build: can't be checked without the Windows show PC.
+- Removing old NVIDIA library folders; the installer's "start with Windows" under elevation.
+- Names in the logs after a face wipe, and RTSP passwords in the settings and show files: privacy
+  choices.
+- STOP ALL on the PIN screen: the engine refuses commands from a device without the PIN.
+- The registration frame stays on if a device dies mid-registration, until the next vision restart.
+- Restarting only the vMix or mixer link whose address changed; the "(development)" version label.
+- `test_ptzoptics.py::test_stream_source_decodes_and_keeps_the_newest_frame` fails now and then (also
+  on the old code): the file source reopens between loops.
 
 ## Audits
 
