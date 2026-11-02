@@ -487,12 +487,10 @@ class App:
         if time.monotonic() < due:
             return
         link = s.link
-        link.visca.close()  # whatever the last try left open
         try:
-            await link.start()
+            await link.start()  # (only opens what is still missing: its loops reconnect VISCA by themselves)
         except Exception as e:  # noqa: BLE001 - still not there: later
             if self._link_retry.get(camera) is not entry:  # settings applied meanwhile
-                link.visca.close()
                 return
             message, delay = str(e) or type(e).__name__, min(LINK_RETRY_MAX, 2 * delay)
             self._link_retry[camera] = (time.monotonic() + delay, delay, message)

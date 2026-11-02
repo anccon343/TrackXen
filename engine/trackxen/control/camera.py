@@ -81,13 +81,20 @@ class CameraLink:
     async def start(self) -> None:
         """Connect and start the send and position loops. The loops start even when connecting fails
         (camera off, name not found, FreeD port taken): they keep reconnecting, and positions come from
-        VISCA without FreeD. The first error is raised afterwards, for the log."""
-        error: OSError | None = None
-        try:
-            await self.visca.connect()
-        except OSError as e:
-            error, self.last_error = e, str(e)
-        if self.cfg.freed_port:
+        VISCA without FreeD. The first error is raised afterwards, for the log.
+
+        Called again after a failed start (the app tries such a link again later), it only opens what
+        is still missing, the FreeD port, and raises while VISCA doesn't answer yet. It never starts
+        the loops twice or closes the VISCA connection the loops have made meanwhile."""
+        error: Exception | None = None
+        if not self._tasks:
+            try:
+                await self.visca.connect()
+            except (OSError, ValueError) as e:  # (ValueError: UnicodeError for a typo such as '192.168.1..60')
+                error, self.last_error = e, str(e) or type(e).__name__
+        elif not self.visca_ok:  # the loops reconnect by themselves; it just doesn't answer yet
+            error = ConnectionError(self.last_error or "camera not answering VISCA")
+        if self.cfg.freed_port and not self._freed_transport:
             remote = getattr(self.visca, "_remote", None)
             try:
                 self._freed_ip = remote[0] if remote else await udp.resolve_async(self.cfg.host)
@@ -98,7 +105,8 @@ class CameraLink:
                                                            on_bad=lambda _: self._count("freed_bad"))
             except OSError as e:
                 error, self.last_error = error or e, str(e)
-        self._tasks = [asyncio.create_task(self._send_loop()), asyncio.create_task(self._poll_loop())]
+        if not self._tasks:
+            self._tasks = [asyncio.create_task(self._send_loop()), asyncio.create_task(self._poll_loop())]
         if error:
             raise error
 
@@ -321,8 +329,8 @@ class CameraLink:
             old.close()  # first: a camera may take only one TCP connection
             try:
                 await new.connect()
-            except OSError as e:
-                self.last_error = str(e)
+            except (OSError, ValueError) as e:  # (ValueError: a host name with a typo)
+                self.last_error = str(e) or type(e).__name__
                 return
             if self._closed or self.visca is not new:  # closed meanwhile: leave no connection open
                 new.close()

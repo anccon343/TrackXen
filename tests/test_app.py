@@ -318,6 +318,39 @@ def test_a_camera_connection_that_could_not_be_opened_is_tried_again(tmp_path, w
     asyncio.run(scenario())
 
 
+def test_trying_a_connection_again_leaves_the_camera_answering(tmp_path, workers, monkeypatch):
+    """The app's retries and the link's own reconnects together: the link's loops are never started
+    twice, and a retry never closes the connection that answers."""
+    monkeypatch.setattr(app_module, "LINK_RETRY_FIRST", 0.05)
+    monkeypatch.setattr(app_module, "LINK_RETRY_MAX", 0.1)
+
+    async def scenario():
+        cam = FakeCamera()
+        port = await cam.start(port=0)
+        freed_port = free_udp_port()
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        blocker.bind(("0.0.0.0", freed_port))
+        app = make_app(tmp_path, AppConfig(cameras=[
+            CameraConfig(id="cam1", host="127.0.0.1", visca_port=port, freed_port=freed_port)]))
+        events = record_events(app)
+        try:
+            await app.start()
+            assert await until(lambda: app.sessions["cam1"].link.visca_ok)
+            await asyncio.sleep(1.5)  # retries every 0.1 s while the FreeD port is taken
+            blocker.close()
+            assert await until(lambda: "cam1" not in app._link_retry)
+            loops = [t for t in asyncio.all_tasks() if t.get_coro().__name__ in ("_send_loop", "_poll_loop")]
+            assert len(loops) == 2
+            camera = [m for kind, m, *_ in events if kind == "camera" and "VISCA" in m]
+            assert camera == ["camera answering VISCA"]  # never "not answering" in between
+        finally:
+            blocker.close()
+            await app.stop()
+            cam.stop()
+
+    asyncio.run(scenario())
+
+
 def test_a_camera_id_used_twice_does_not_leave_a_connection_open(tmp_path, workers, stub_links):
     async def scenario():
         cfg = config("cam1")

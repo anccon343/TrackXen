@@ -424,6 +424,35 @@ def test_a_freed_port_in_use_still_leaves_the_camera_controllable():
     asyncio.run(run())
 
 
+def test_starting_again_opens_only_what_is_missing():
+    """The app tries a link whose start failed again later: that must not start a second pair of loops
+    or drop the VISCA connection the loops have made meanwhile, and it binds the FreeD port once free."""
+    async def run():
+        cam = FakeCamera()
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        blocker.bind(("0.0.0.0", 0))
+        link = CameraLink("cam1", CameraLinkConfig(host="127.0.0.1", visca_port=await cam.start("127.0.0.1", 0),
+                                                   freed_port=blocker.getsockname()[1]))
+        try:
+            with pytest.raises(OSError):
+                await link.start()
+            tasks, client = list(link._tasks), link.visca
+            link.request(10, 0)
+            assert await wait_for(lambda: link.visca_ok and cam.state.pan_rate > 0, 1.0)
+            with pytest.raises(OSError):
+                await link.start()  # the FreeD port is still taken
+            blocker.close()
+            await link.start()  # now everything is open
+            assert link._tasks == tasks and link.visca is client and link._freed_transport is not None
+            assert all(not t.done() for t in tasks) and link.visca_ok and cam.state.pan_rate > 0
+        finally:
+            await link.close()
+            cam.stop()
+            blocker.close()
+
+    asyncio.run(run())
+
+
 def test_a_tcp_camera_that_is_off_at_start_is_connected_once_it_answers():
     """K52: a camera that refuses the connection at start (off, booting) is reconnected later."""
     async def run():
