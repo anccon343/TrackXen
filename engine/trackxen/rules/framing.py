@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass, field
 
 from trackxen.control.camera import Pose
-from trackxen.control.controller import cut_at_bottom, head_point
+from trackxen.control.controller import FACE_MIN_CONF, cut_at_bottom, head_point
 from trackxen.control.lens import Lens
 from trackxen.core.tracking_settings import AppSettings
 from trackxen.rules.areas import Placed
@@ -38,6 +38,7 @@ JOIN_S, LEAVE_S = 0.5, 1.0  # a person must qualify this long to join, fail this
 SAME_PLACE = 2.5  # degrees: a new track where a member just vanished is that member (new ID)
 EDGE_ROOM = 0.85  # the main target must stay inside this share of the picture (and of the widest view)
 MAX_GROUP = 4
+FACE_HEIGHT_TAU = 1.0  # s: low-pass on where the face sits in the person's box (the point used when it is lost)
 SIT_RATIO, STAND_RATIO, POSTURE_S = 0.45, 0.7, 0.7  # knee drop / torso; seconds before a change counts
 
 
@@ -108,6 +109,20 @@ class Framer:
         self.posture = ""
         self.posture_since: float | None = None
         self.last_t: float | None = None
+        self.face_height: float | None = None  # where the face has been in the box, share of its height
+
+    def _head(self, box: list[float], keypoints: list[list[float]], dt: float) -> tuple[float, float]:
+        """head_point, without its jump when the face is lost (looking down at notes, turned away): the box-top
+        fallback goes where the face has been in the box (low-passed), not to a fixed 0.1 of it. Measured: tilt
+        starts while walking at an 8-degree view 8 -> 3.4 a minute, standing with the Halting Area off 5.7 -> 1."""
+        x, y = head_point(box, keypoints)
+        top, height = box[1], max(1.0, box[3] - box[1])
+        if any(c >= FACE_MIN_CONF for _, _, c in keypoints[:5]):  # the face is seen
+            share = min(0.5, max(0.0, (y - top) / height))
+            k = 1.0 if self.face_height is None else min(1.0, dt / FACE_HEIGHT_TAU)
+            self.face_height = share if self.face_height is None else self.face_height + (share - self.face_height) * k
+            return x, y
+        return x, (y if self.face_height is None else top + self.face_height * height)
 
     def shot(self, slot: AppSettings, main: Placed, people: list[Placed], zones: dict[int, str],
              msg: dict, pose: Pose, lens: Lens, t: float) -> Shot:
@@ -115,7 +130,7 @@ class Framer:
         dt = 0.0 if self.last_t is None else max(0.0, min(0.5, t - self.last_t))
         self.last_t = t
         af, comp = slot.auto_framing, slot.composition
-        hx, hy = head_point(main.track["box"], main.track["keypoints"])
+        hx, hy = self._head(main.track["box"], main.track["keypoints"], dt)
         anchor_x, anchor_y = comp.anchor_x, comp.anchor_y
         target_height, facing, posture = None, "", ""
 

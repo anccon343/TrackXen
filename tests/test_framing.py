@@ -250,3 +250,17 @@ def test_a_main_person_cut_off_at_the_bottom_does_not_narrow_the_single_view():
     assert shot.group == [2]
     shot, t = run(framer, s, main, [main], 2.0, t)
     assert framer.blend == 0.0 and shot.want_hfov is None  # stays at the view it has (40), no zooming in
+
+
+def test_the_framed_point_does_not_jump_when_the_face_is_lost():
+    """C6: looking down at notes or turning away, the face keypoints drop out and the point falls back to near the
+    top of the box. That fallback is put at the height the face has had in the box (here 0.25 of it), not at a fixed
+    0.1: a jump of 0.15 x 600 px, a step of the tilt the camera would follow."""
+    framer, s = Framer(), slot()
+    x = LENS.angles_to_pixel(0.0, 0, W, H, POSE.zoom)[0]
+    face = person(1, 0.0, keypoints=kp(nose=(x, 450), l_eye=(x - 10, 445), r_eye=(x + 10, 445)))
+    shot, t = run(framer, s, face, [face], 2.0)
+    assert shot.y == pytest.approx(446.67, abs=0.01)
+    lost = person(1, 0.0, keypoints=kp(l_shoulder=(x - 60, 520)))  # no face keypoints
+    assert framer.shot(s, lost, [lost], {}, MSG, POSE, LENS, t).y == pytest.approx(446.67, abs=0.5)
+    assert Framer().shot(s, lost, [lost], {}, MSG, POSE, LENS, t).y == pytest.approx(360.0)  # never seen: 0.1

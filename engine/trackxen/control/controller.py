@@ -315,7 +315,10 @@ def _hysteresis(table: list[float], last: int, step: int, speed: float, share: f
     return step
 
 
-def head_point(box: list[float], keypoints: list[list[float]], min_conf: float = 0.4) -> tuple[float, float]:
+FACE_MIN_CONF = 0.4  # face keypoints this certain count as seen
+
+
+def head_point(box: list[float], keypoints: list[list[float]], min_conf: float = FACE_MIN_CONF) -> tuple[float, float]:
     """The point to frame: middle of the visible face keypoints, else near the top of the box."""
     face = [(x, y) for x, y, c in keypoints[:5] if c >= min_conf]  # nose, eyes, ears
     if face:
