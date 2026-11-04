@@ -17,8 +17,11 @@ every feature, adjustment and screen, with a UI in the style of Canon's camera s
     Control from the PC and from tablets/phones.
   - **Venues:** distance and lighting differ every time.
   - **Mic levels:** come mainly from a Midas MR18, sometimes a Behringer X Air (mics assigned to presets/persons).
-  - **Chosen extras beyond Canon:** smoother, slower moves while a camera is live on Program, and
-    choosing the target from the active microphone.
+  - **Chosen extras beyond Canon:** smoother, slower moves while a camera is live on Program,
+    choosing the target from the active microphone, and (asked 2026-11-04) smooth pan and tilt that
+    are never jerky, with an adjustment for it: Pan/Tilt Smoothness (section 3, step 5). Where the
+    cameras have no ramp of their own, TrackXen is the layer that shapes the commands, joystick moves
+    included.
   - **Not wanted:** automatic lower thirds.
 - See section 7 for where Canon's design and the P400 differ.
 
@@ -105,6 +108,14 @@ The settings wizard walks through steps 1–10. Every step is also its own page 
   - Higher is livelier, but more likely to jump to nearby people.
   - 1 is safest when switching target or moving the silhouette far.
   - If the camera itself moves (on a rail): use 1 with the smallest dead zone.
+- **Beyond Canon: Pan/Tilt Smoothness**, slider 1–10 (default 5), right after Tracking Sensitivity.
+  - Canon folds smoothness into Tracking Sensitivity and the halting area. Comparable trackers keep a
+    separate control next to their sensitivity and dead band: Sony's Auto Framing "Speed" 1–5 (the
+    acceleration level), PTZOptics' acceleration slider, Seervision's pan/tilt smoothness,
+    TrackPilot's Style and Attack, OBSBOT's Lazy to Crazy.
+  - Higher = softer starts, stops and speed changes; 1 = the liveliest. It works off air and on air
+    (the on-air motion applies on top of it) and also ramps the app's own joystick (arrow button)
+    moves. STOP ALL, tracking off, the watchdog and absolute moves are never ramped.
 
 ### Step 6: Auto Select Exclusion Area
 - Areas 1–4: toggle, View and own colour each.
@@ -174,6 +185,7 @@ nearby secondary people. With only the main target in view, the normal Compositi
     - Display Size toggle, slider, −/+ and value
     - Auto Zoom toggle
     - Tracking Sensitivity slider, −/+ and value
+    - (beyond Canon) Pan/Tilt Smoothness slider, −/+ and value
   - **Auto Framing** toggle with indented sub-toggles Multi-Person, Face Direction, Sit/Stand.
   - **Registered Face Tracking** toggle.
   - **App Running**: **Auto Tracking** toggle (start/stop) and a **Status** badge.
@@ -232,8 +244,10 @@ nearby secondary people. With only the main target in view, the normal Compositi
   over people you never want tracked helps.
 - **Too jumpy**: Display Size big, sensitivity high or dead zone small. Lower the sensitivity, turn
   off Auto Zoom if zoom isn't needed, use a Fixed Viewing Angle Area at the podium. In Multi-Person:
-  zoom speed too high, or big Display Size with a small minimum zoom-out size.
-- **Sluggish**: sensitivity too low, or dead zone too large.
+  zoom speed too high, or big Display Size with a small minimum zoom-out size. (Beyond Canon: raise
+  Pan/Tilt Smoothness.)
+- **Sluggish**: sensitivity too low, or dead zone too large. (Beyond Canon: or Pan/Tilt Smoothness
+  high, which follows sudden moves later in tight shots.)
 - **Secondary people drop out (Multi-Person)**: zoom speed too low, minimum size too large,
   Display Size too large, Display Position at the top, or main target far from the priority area.
 - **Status says Tracking but the camera doesn't move**:

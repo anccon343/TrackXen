@@ -13,7 +13,8 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\sim_load.py          (optional, with --sim-cameras 4: all cameras at once, measured)
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
-.venv\Scripts\python -m pytest                  (411 tests)
+.venv\Scripts\python tools\motion_bench.py --check   (pan/tilt smoothness in virtual time, about 10 s)
+.venv\Scripts\python -m pytest                  (456 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -803,6 +804,158 @@ code before these fixes and after them, alternating, with the same settings and 
 - **No regressions:** no scenario failed after the fixes that passed before.
 - **Logs:** no errors or tracebacks after the fixes. Both versions stopped cleanly on Ctrl+C.
 - **Not checked here:** the scenarios at the full detection rate on the show PC.
+
+## 2026-11-04: smooth pan and tilt
+
+The request: smooth pan and tilt are guaranteed, never jerky, with an adjustment for it; where the
+cameras have no ready way to move smoothly, TrackXen is the middle layer that shapes the commands.
+
+**How it was measured.** A closed-loop bench in virtual time, now `tools/motion_bench.py`. The real
+session, controller, Kalman filter, camera link, VISCA, FreeD, tracker and detection-rate code follow a
+simulated person 15 m away against a fake P400 and G2 with a 40 ms speed ramp of their own. The person
+walks at 0.5 and 1.2 m/s, stops and goes, or stands, with head bob, sway, head turns, flickering ear
+keypoints, looking down, and detector noise. Cases: 50 and 8 degrees, on and off air, Halting Area on
+and off; means of 3 seeds. These are the simulator's numbers: the cameras' own ramps and speed tables
+are still estimates.
+
+**What the cameras offer** (manuals, web APIs and menus read)
+- **P400:** no acceleration, ramp or smoothing setting in its user guide or REST API; the API sets only
+  top speeds (pan 0-21, tilt 0-18, zoom 0-7). Its menu has Adaptive P/T (slower pan and tilt when
+  zoomed in); whether that changes VISCA moves is unknown. BirdDog publishes no P400 VISCA list, so
+  Sony's ramp curve and pan-tilt slow mode are unconfirmed: `visca_probe.py HOST ramp` now asks.
+- **G2:** no acceleration or ramp setting in its menus, VISCA or CGI. SpeedByZoom most likely affects
+  only the IR remote (PTZOptics' G3 manual says so).
+- **Comparable trackers** keep a smoothness or acceleration control next to sensitivity and a dead band
+  (Sony Auto Framing's Speed, PTZOptics' acceleration, Seervision's smoothness, TrackPilot's Style and
+  Attack, OBSBOT's Lazy to Crazy). Canon has Sensitivity and the halting area only.
+- So TrackXen does the smoothing, for tracking and for its own joystick.
+
+**The measured causes**
+- **Stop-start while walking (the main one).** A move ended as soon as the error was small, even while
+  the person walked on. The camera caught up, stopped, waited until the person left the halting area,
+  and started again hard: 17-57 starts a minute and 9-60 % of the walking time stopped, on both
+  cameras, at every zoom, on and off air. The on-air profile did not cure it.
+- **Flapping speed steps:** the nearest speed step was picked afresh every 20 ms, so a walker between
+  two steps switched the camera back and forth (visible once the stop-start was gone).
+- **Noisy feed-forward:** the Kalman filter's speed of the person, 0.24-0.47 deg/s RMS off (3-6 % of the
+  picture per second at 8 degrees), went straight into the speed command.
+- **The G2's position age:** a polled position is about 48 ms old when the command is worked out (P400
+  FreeD: 4-10 ms): 2.7 % of the picture at 8 degrees and 1.2 m/s.
+- **Halting Area off:** its dead zone (1 % of the picture, 0.045 degrees of tilt at 8 degrees) was
+  smaller than a walking head's bob, so the tilt hunted: 40-210 starts a minute.
+- **The face lost** (looking down at notes): the followed point jumped from the face to near the top
+  of the box, about 23 px at 8 degrees.
+- **A brisk walker lost in a tight shot:** the top speed is scaled with the zoom (hfov / 40). At 8
+  degrees on air the cap, 3 deg/s, is below a 1.2 m/s walker at 15 m (4.6 deg/s), and the person was
+  lost (180-240 % of the picture off, RMS); at 5 degrees off air too.
+- **Not causes** (measured): the Kalman filter's noise settings (a "correct", smaller measurement noise
+  is much worse), the lookahead, the detection rate (8-30 a second), a video delay 40 ms off, missed
+  detections, and the VISCA pacing (one command at a time, at most 30 a second, as Sony asks).
+- **Trade-offs, not faults:** gain and acceleration are not scaled with the zoom. A lower sensitivity
+  already calms tight shots; zoom-scaled acceleration did not help (below).
+
+**What changed** (before → after each change, measured when it was made; the bench table below has
+them all together)
+- **A move doesn't end while the person keeps walking** (their low-passed speed above 0.15 × the dead
+  zone per second and above 0.3 deg/s); a standing person still settles. On its own, P400 at 50
+  degrees, 1.2 m/s: 29.9 → 0 starts a minute, stopped 22 → 0 % of the walking time, acceleration 33.4 →
+  11.3 % of the picture per s², framing error 3.25 → 0.68 % RMS. P400 at 8 degrees, 0.5 m/s: 41 → 0
+  starts.
+- **A camera ahead of a walking person waits for them** instead of ending the move: at Smoothness 10 on
+  air a late soft start overshot, and the camera then stood still 24 % of the walking time. Now it waits
+  at speed 0 with the move open and never turns back against the walk (in the test: 58 % → under 10 %
+  stopped). Default stop-and-go unchanged (p95 16.9 → 16.8 %); the G2's slow walk: acceleration 37 → 25.
+- **Speed step hysteresis:** the step is kept until the wish is past the middle to the next one by 0.25
+  of the gap; stops and reversals are never held.
+- **Feed-forward from a low-passed speed** (0.15 s at the default).
+- **A minimum dead zone:** at least 0.15 degrees, and at least the slowest speed step × 0.27 s (a G2:
+  0.46 degrees). P400 with the Halting Area off, 0.5 m/s at 8 degrees: tilt 204 → 11 starts a minute;
+  standing 52 → 5.7. G2 with the Halting Area on, walking towards the camera: tilt reversals 15 → 1.9.
+- **The control step uses the camera's position moved on to now** (the newest one, extrapolated with
+  the camera's speed over 0.15 s, at most 0.1 s ahead). G2 at 8 degrees, 1.2 m/s: framing error 5.86 →
+  3.91 %, step changes 3.5 → 2.7 a second.
+- **Keeping up in tight shots:** the zoom-scaled top speed may rise to twice the person's speed (never
+  above the motion profile's top speed). A 1.2 m/s walker at 8 degrees on air: lost (233 % P400, 240 %
+  G2) → 3.6 / 3.7 %; at 5 degrees off air 181 → 5.5 %.
+- **The face lost:** the fallback point goes where the face has been in the box (remembered over 1 s)
+  instead of a fixed 10 % below its top. Tilt, 1.2 m/s at 8 degrees: 8.0 → 3.4 starts a minute,
+  acceleration 21.6 → 14.4; standing with the Halting Area off: 5.7 → 1.0 starts a minute. Pan is the
+  same.
+- **Pan/Tilt Smoothness 1-10** (per App Settings, default 5; old settings and show files load with 5),
+  next to Tracking Sensitivity in the UI. Factors on the camera's motion profile, under the on-air one:
+
+  | Level | Speed low-pass | Step hysteresis | Acceleration | S-curve build-up | Joystick ramp |
+  |---|---|---|---|---|---|
+  | 1 | none | none | 45 deg/s² | none | none |
+  | 5 | 0.15 s | 0.25 | 45 deg/s² | none | 0.22 s |
+  | 10 | 0.4 s | 0.35 | 33.75 deg/s² | 0.3 s | 0.5 s |
+
+  In between linearly (the S-curve from 6 up). Gain, top speeds, lookahead and the feed-forward share
+  are unchanged. Measured before → 1 / 5 / 10: P400 at 8 degrees, 1.2 m/s, acceleration 125 → 62 / 48 /
+  37 and step changes 4.5 → 2.4 / 1.1 / 0.7 a second, framing error 4.2 → 3.5 / 3.5 / 4.3 %; P400
+  stop-and-go at 50 degrees, acceleration 25 → 19 / 18 / 14. At 10 a 1.2 m/s walker at 8 degrees on air
+  is still framed (5.2 % P400, 6.5 % G2 RMS).
+- **The joystick middle layer** (`control/shaper.py`): the app's arrow buttons (the `manual` command)
+  ramp pan and tilt along an S-curve in deg/s through the camera's speed tables. Both axes take the same
+  time, so a diagonal stays straight; a reversal passes through a stop; zoom is sent as it is. A change
+  takes at most 0.5 s × (Smoothness − 1) / 9, less when it is small in picture terms.
+  - **Release bound:** from the moment the release reaches the engine, the pan/tilt step is 0 within the
+    ramp plus one 20 ms control tick: at once at 1, within 0.24 s at 5, 0.52 s at 10. If the repeats
+    stop arriving (connection dropped), within 0.3 s plus the ramp plus 0.02 s after the last one (0.82
+    s at 10). The send loop then sends it within 1/30 s plus the VISCA round trip.
+- **Safety stops stay immediate:** `CameraSession.halt()` forgets the ramp and sends a stop at once, on
+  Auto Tracking off, the watchdog ("No video"), STOP ALL, a failed control step and closing a camera,
+  and before presets and absolute moves (a ramp's next drive command would cancel them). The STOP ALL
+  and closing tests fail without it.
+- **Tools:** `tools/motion_bench.py` (above; `--check` fails on the smoothness and framing limits) and
+  `visca_probe.py HOST ramp` (asks for Sony's ramp curve and slow mode, read only).
+
+**The bench, before and now** (`python tools/motion_bench.py`, 3 seeds each; pan unless it says tilt).
+Each cell: starts a minute / step changes a second / acceleration (% of the picture per s²) / framing
+error (% RMS). The bench starts each run from the same clock, so a few numbers differ a little from
+those above.
+
+| Case | 0d953f9 | Smoothness 1 | 5 (default) | 10 |
+|---|---|---|---|---|
+| P400 50°, walk 1.2 m/s | 29.9 / 7.30 / 33.4 / 3.25 | 0 / 3.75 / 11.2 / 0.62 | 0 / 1.49 / 8.8 / 0.54 | 0 / 0.94 / 7.3 / 0.70 |
+| P400 8°, walk 1.2 m/s | 21.8 / 4.46 / 125 / 4.24 | 0 / 2.36 / 62.5 / 3.53 | 0 / 1.11 / 47.9 / 3.49 | 0 / 0.67 / 36.6 / 4.29 |
+| P400 8°, walk 0.5 m/s | 41.1 / 4.89 / 94.1 / 3.37 | 0 / 3.64 / 39.2 / 1.67 | 0 / 1.17 / 25.2 / 1.79 | 0 / 0.64 / 18.7 / 2.02 |
+| G2 50°, walk 1.2 m/s | 31.0 / 9.18 / 34.1 / 3.20 | 0 / 6.97 / 10.3 / 0.64 | 0 / 3.51 / 7.8 / 0.60 | 0 / 2.26 / 7.0 / 0.76 |
+| G2 8°, walk 0.5 m/s | 43.9 / 10.14 / 99.3 / 3.59 | 11.2 / 5.73 / 37.1 / 2.38 | 11.2 / 3.10 / 28.3 / 2.33 | 0.9 / 2.26 / 20.0 / 2.18 |
+| P400 50° on air, walk 0.5 m/s | 16.8 / 4.91 / 16.0 / 5.42 | 6.5 / 5.93 / 10.6 / 2.80 | 5.6 / 2.62 / 9.2 / 2.83 | 9.3 / 2.18 / 8.4 / 3.19 |
+| P400 8° on air, walk 1.2 m/s | lost (233 %) | 0 / 2.28 / 61.1 / 3.60 | 0 / 1.09 / 46.7 / 3.58 | 0 / 0.80 / 41.0 / 5.17 |
+| G2 8° on air, walk 1.2 m/s | lost (240 %) | 0 / 5.56 / 54.3 / 4.02 | 0 / 2.68 / 42.4 / 3.71 | 0 / 1.57 / 33.9 / 6.56 |
+| P400 8°, stop-and-go | 31.1 / 4.95 / 111 / 6.35 | 11.8 / 4.22 / 84.6 / 7.17 | 12.6 / 3.54 / 72.1 / 8.30 | 11.1 / 3.78 / 64.6 / 11.39 |
+| P400 8°, Halting Area off, walk 0.5 m/s, tilt | 206.5 / 7.29 / 75.3 / 1.81 | 6.5 / 0.22 / 11.4 / 1.48 | 7.5 / 0.28 / 11.2 / 1.65 | 5.6 / 0.19 / 7.6 / 1.48 |
+| G2 50°, Halting Area off, walk 1.2 m/s, tilt | 119.5 / 3.98 / 24.4 / 0.38 | 9.2 / 0.31 / 6.5 / 0.30 | 6.9 / 0.23 / 4.7 / 0.29 | 6.9 / 0.23 / 4.4 / 0.25 |
+
+(The stop-and-go person starts 11 times a minute.) `--check`: 21 limits break at 0d953f9, none at
+Smoothness 1 and 5, three at 10 (the tight on-air walks: p95 9.0 % P400 and 14.7 % G2, the G2's worst
+moment 31 % off). The G2's slow tight walk may make 15 starts a minute instead of 10: over 10 seeds it
+makes 9.3 on average, 0-19.6 per seed, so a limit of 10 failed or passed with the seeds.
+
+**The cost, and what is left**
+- **Stop-and-go in tight shots frames a little worse:** when a person stops, the camera overshoots
+  slightly and comes back (P400 at 8 degrees: 6.35 → 8.30 % RMS at the default, 11.39 % at 10).
+- **P400 with the Halting Area off, 1.2 m/s at 8 degrees:** the tilt still follows the head bob (207
+  starts and 206 reversals a minute, against 208 reversals before; step changes 11.9 → 7.7 a second). It
+  would need a bigger dead zone; a slower walking filter (0.3 and 0.5 s) did not help.
+- **P400 at 5 degrees, 1.2 m/s, Halting Area on:** about 47 small tilt corrections a minute (81 % of
+  the time still; before, this walker was lost in pan, so there is nothing to compare). A
+  0.25-degree minimum dead zone cut them to 16 and the reversals 12.6 → 0 (framing 3.28 → 3.39 %), but
+  it changes every tight and halting-off shot: left for a decision. Smoothness 10 cuts the reversals to
+  2.3 a minute.
+- **Measured and not kept:** zoom-scaled acceleration (on top of the on-air share it lost a 1.2 m/s
+  walker at 5 degrees, 146-437 %, and even with a guard that kept the person framed it smoothed nothing
+  in stop-and-go: acceleration 66 → 70); relaxing the smoothing as the person drifts off (it trimmed the
+  worst moment at 10 on air at 5 degrees only from 33.9 to 25.6 %); a hysteresis on the face keypoints'
+  confidence (mixed: the P400's slow walk at 8 degrees framed worse, 1.79 → 2.06 %, the G2's better).
+- **The S-curve** promised in research.md 3.4 and plan.md exists now (`Motion.jerk_time`), but only
+  above Smoothness 5.
+- **Not checked on the cameras:** run `visca_probe.py HOST ramp`, the pan sweep at full tele with
+  Adaptive P/T (G2: SpeedByZoom) on and off, and a FreeD log of a walking speaker on a P400.
+- **Tests:** 45 new (42 engine, 3 tools); 452 passed and 4 skipped (environmental). ruff, svelte-check
+  and the UI build are clean.
 
 ## Audits
 

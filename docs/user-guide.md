@@ -84,8 +84,9 @@ their position 20 times a second over VISCA.
 - **App Settings 1-5:** five complete tracking setups per camera (for example "Sermon", "Worship",
   "Panel"). Switch with the five buttons; changes work at once and **Save** keeps them. Other saves
   (faces, connections, a vMix input, Apply in Settings) also keep the changes made so far.
-- The **PTZ** tab moves the camera by hand. Moving a camera by hand (here, in vMix, with a joystick)
-  stops tracking, unless "Restart Tracking After Manual Operation" is on (wizard step 4).
+- The **PTZ** tab moves the camera by hand; its moves start and stop softly by Pan/Tilt Smoothness
+  (section 4). Moving a camera by hand (here, in vMix, with a joystick) stops tracking, unless
+  "Restart Tracking After Manual Operation" is on (wizard step 4).
 
 ## 4. Setting up a venue: the Setting Wizard
 
@@ -101,7 +102,8 @@ the camera moves.
    Angle Areas** (a podium: while the person stands inside, the shot stays still).
 4. **Auto Select:** someone standing in the auto select area for the start time becomes the target.
 5. **Composition:** where the head sits in the picture (drag the silhouette), how big the person is,
-   the quiet zone (Pan/Tilt Halting Area), sensitivity, and the calmer motion while live.
+   the quiet zone (Pan/Tilt Halting Area), sensitivity, **Pan/Tilt Smoothness** (below), and the
+   calmer motion while live.
 6. **Exclusion Areas:** posters, photos and screens with people on them are never picked.
 7. **Tracking Halting Areas:** for example the seats of people waiting their turn: someone walking in
    there is let go, and nobody there is picked.
@@ -110,6 +112,62 @@ the camera moves.
 9. **Registered Face Tracking:** register up to 7 faces per camera; only those people are followed.
    Ask people first; the data stays on this PC.
 10. **Camera Preset Link:** what tracking does after a camera preset is recalled.
+
+### Pan/Tilt Smoothness (beyond Canon)
+
+**Composition → Pan/Tilt Smoothness**, 1-10 per App Settings, default 5: on wizard page 5 and on the
+Cameras page under Tracking Sensitivity.
+
+- **Higher is softer:** starts, stops and speed changes are gentler. The camera follows the person's
+  walking speed smoothed over a longer time and keeps a speed step longer before it changes to the
+  next; above 5 it also builds the acceleration up gradually (an S-curve) and accelerates less (at
+  10: three quarters as hard).
+- **1 is the liveliest:** the camera reacts at once to every change of the person's speed.
+- **Off air and on air.** On-Air Motion still works on top of it: while live, its slower top speed,
+  softer starts and stops and bigger halting area come on top of the Smoothness, so live stays calmer
+  than off air at the same level.
+- **It doesn't change** the top speed, how hard the camera corrects (Tracking Sensitivity) or the
+  Pan/Tilt Halting Area.
+- **The cost of high values:** sudden moves are followed later, mostly in tight shots. Measured in
+  the simulator with a person 15 m away in an 8-degree shot: when they stop and start again, 95 % of
+  the time the head is within about 17 % of the picture of its position at 5 and 21 % at 10; a brisk
+  walker (1.2 m/s) on a live G2, within about 7 % at 5 and 15 % at 10. In wide shots the difference is
+  small.
+- A **lower Tracking Sensitivity** also calms a tight shot, but lags a fast walker more.
+- With the **Pan/Tilt Halting Area off**, a small quiet zone stays: 0.15 degrees (a G2: 0.46 degrees,
+  from its slowest speed), so the tilt doesn't follow the bob of a walking head.
+
+**The arrow buttons** (PTZ tab, and around the wizard's picture) are smoothed by the same setting:
+TrackXen ramps the pan and tilt speed up and down along an S-curve instead of jumping to the button's
+speed. A diagonal stays straight, and a change of direction passes through a stop.
+
+- A speed change takes at most 0.5 s × (Smoothness − 1) / 9: none at 1 (sent as it is), 0.22 s at 5,
+  0.5 s at 10. A small change in a wide shot is quicker.
+- **Letting go:** pan and tilt are at speed 0 at most that long plus 20 ms after the release reaches
+  TrackXen: at once at 1, within 0.24 s at 5, 0.52 s at 10. If the page loses its connection while a
+  button is held, the camera stops at most 0.3 s plus the ramp after the last repeat (0.82 s at 10).
+- Zoom is not ramped. Moves made in vMix, BirdUI or with a hardware joystick go straight to the
+  camera; TrackXen doesn't ramp them.
+- **Never ramped:** STOP ALL, switching Auto Tracking off, "No video", closing a camera (Apply), and
+  going to a preset, the initial position or a clicked point. These stop the camera, or take over, at
+  once.
+
+**Camera tips for smooth moves**
+
+- Neither camera has a setting of its own for how softly it starts and stops (none in the P400's user
+  guide or web API, nor in the G2's menus), so TrackXen does it. `tools\visca_probe.py <camera IP> ramp`
+  asks a camera whether it has Sony's ramp curve and slow mode anyway; it only asks, nothing moves.
+- **P400 firmware:** keep it current, 5.5.115 / MCU 035 or later (5.5.089 improved pan and tilt at
+  low speeds).
+- **P400 Adaptive P/T** (camera menu, Pan Tilt Zoom) and **G2 SpeedByZoom** slow the camera down when
+  zoomed in, which TrackXen already does itself. Before relying on either, run the speed sweep at full
+  tele with it on and with it off (`tools/README.md`, lab checklist). If the speeds differ, the camera
+  changes the speeds TrackXen asks for, and TrackXen's speed tables are right only with it off.
+- **A G2 in very tight shots:** it can't turn slower than about 1.7 degrees per second (data sheet),
+  half the picture width per second at full tele. A slowly walking person in a tight G2 shot gets small
+  stop-and-go corrections: measured in the simulator at 8 degrees, about 10 starts a minute at
+  Smoothness 5 and about 1 at 10, where a P400 makes none. Zoom out a little, raise the Smoothness,
+  or use a P400 for the tightest shots.
 
 Save a **show file** per venue (Settings → System → Save setup) and load it there next time. Loading
 one keeps this PC's own web address, performance mode and hardware test result. A show file saved by
@@ -214,8 +272,10 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 | "No video", and the log says "NDI source not found" while the camera is on | Part of an NDI name is taken only as whole words: "BIRDDOG-12345" finds "BIRDDOG-12345 (CAM)", "BIRDDOG-123" doesn't, and "CAM1" never takes "PC (CAM10)". Choose the camera's full NDI name from the list |
 | A "settings" warning in the log after a start | settings.json was damaged or held a value no longer accepted, and TrackXen repaired it (a damaged file is kept as `settings.json.broken-<time>`; the last good copy `settings.json.bak` or the defaults are used). Check the settings |
 | It follows the wrong person | Click the right one; add exclusion or halting areas; lower the sensitivity |
-| Too jumpy | Lower the sensitivity, widen the Pan/Tilt Halting Area, use a fixed area at the podium |
-| Too slow to follow | Raise the sensitivity, make the Pan/Tilt Halting Area smaller |
+| Too jumpy | Raise Pan/Tilt Smoothness, lower the sensitivity, widen the Pan/Tilt Halting Area (or switch it on), use a fixed area at the podium |
+| Too slow to follow | Raise the sensitivity, make the Pan/Tilt Halting Area smaller, lower Pan/Tilt Smoothness |
+| The camera moves on briefly after letting go of an arrow button | The soft stop of Pan/Tilt Smoothness: at most 0.52 s at 10. Lower it; at 1 it stops at once. STOP ALL always stops at once |
+| A tight shot on a G2 moves in small stop-and-go steps | The G2's slowest speed (section 4, camera tips): zoom out a little, or raise Pan/Tilt Smoothness |
 | Tracking stops after someone used the joystick | Wizard page 4: "Restart Tracking After Manual Operation" |
 | Everything slow | Settings → Performance → Light, or run the hardware test |
 | Tablets can't open the page | Windows Firewall: allow TrackXen on private networks (or install for all users) |

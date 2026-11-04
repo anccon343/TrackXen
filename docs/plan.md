@@ -135,6 +135,9 @@
    range, and priority/fixed areas.
 4. **Turn it into a speed command:** the target's own speed plus a correction, limited by the active
    motion profile (normal or on-air), smoothed (S-curve), and mapped onto the P400's measured speed steps.
+   (As built, 2026-11-04: a constant acceleration limit, and an S-curve only above Pan/Tilt Smoothness 5;
+   the target's speed is low-passed and the speed step held with hysteresis. Joystick moves are ramped
+   too. See progress.md.)
 5. **Watchdog:** no fresh data means **stop**.
 
 **Automatic calibration** (once per camera, stored):

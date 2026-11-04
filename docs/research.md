@@ -403,6 +403,10 @@ for panels where several people share one mic.
 - **On-air profile:** each App Settings slot gets a second set of motion limits, used while the camera
   is on Program:
   - lower top speed and gentler starts and stops (S-curve acceleration)
+    - As built: the on-air profile scales the top speed and the acceleration (a constant acceleration
+      limit). The S-curve exists since 2026-11-04 (`Motion.jerk_time`), but only above Pan/Tilt
+      Smoothness 5, off air and on air alike: the acceleration builds up over 0.06 s at 6 to 0.3 s at
+      10. At 1-5 starts and stops ramp at a constant acceleration (progress.md, 2026-11-04).
   - a bigger dead zone, so small movements of the speaker are ignored
   - slow zoom, or no zoom, while live
   - no big re-targeting moves (e.g. jumping to a new speaker): wait until off Program, or move very
@@ -495,7 +499,8 @@ Effort: easy / medium / hard.
 8. **Wide-camera assist** (medium): one camera stays wide and watches the whole stage; it guides the
    others so they never lose the target.
 9. **Operator-style moves** (medium): smooth S-curve starts and stops, look-room, rule-of-thirds options,
-   letting a shot settle like a human operator would.
+   letting a shot settle like a human operator would. (S-curve starts and stops: built 2026-11-04, with
+   Pan/Tilt Smoothness above 5.)
 10. **Lens calibration wizard** (medium): measure field of view against zoom for each camera, for exact
     click-to-centre and smooth control.
 11. **Virtual PTZ fine-tuning** (hard): small corrections done as a crop inside the 4K picture, sent to
