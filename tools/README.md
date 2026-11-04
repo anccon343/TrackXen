@@ -89,6 +89,7 @@ Then, in a second window:
 | `fuse_preprocess.py` | Moves the image preparation into the exported models, so it runs on the GPU (run after exporting) |
 | `gpu_libs_manifest.py` | Lists the NVIDIA DLLs the installed app downloads on its first start (`--check` in the build) |
 | `sim_load.py` | Load and soak test: all cameras tracking at once, with measured results |
+| `motion_bench.py [cases]` | Pan/tilt smoothness without cameras or video: the real tracking code follows a simulated walker in virtual time (P400 and G2, wide and tight, on air, Halting Area off). Prints starts, speed step changes, acceleration and framing error per case; `--check` fails when a limit breaks; `--slot smoothness=10` tries another setting. The standard cases take about 10 s |
 | `get_face_models.py` | Downloads the face models (YuNet, SFace) for Registered Face Tracking |
 | `hardware_test.py` | Measures this PC and recommends Light / Auto / HYPER |
 | `stats_view.py` | Shows a statistics log afterwards |

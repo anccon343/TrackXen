@@ -6,6 +6,7 @@ import importlib.util
 import json
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ def load_tool(name: str, monkeypatch):
     monkeypatch.syspath_prepend(str(TOOLS))  # the tools import their helpers as `_common`
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"{name}.py")
     tool = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, tool)  # (dataclasses look their module up there)
     spec.loader.exec_module(tool)
     return tool
 
@@ -232,6 +234,29 @@ def test_sim_load_puts_auto_select_back(monkeypatch):
     assert server.posts[-2:] == [
         {"type": "tracking", "camera": "cam1", "on": False},
         {"type": "slot_settings", "camera": "cam1", "slot": 1, "settings": {"auto_select": {"enabled": False, "start_time": 3.0}}}]
+
+
+def test_motion_bench_gives_the_same_numbers_each_time_and_puts_the_clock_back(monkeypatch, tmp_path):
+    """The smoothness bench runs the real tracking code in virtual time: one case and seed always gives the same
+    result, the real clock and UDP sockets are back afterwards, and --check catches a walk followed in stop-starts."""
+    import time
+
+    from trackxen.devices import udp
+
+    tool = load_tool("motion_bench", monkeypatch)
+    real = time.monotonic, udp.open_udp
+    case = tool.Case.parse("walk1.2-p400-50")
+    results = tool.run_cases([case], seeds=[1])
+    assert (time.monotonic, udp.open_udp) == real
+    saved = tmp_path / "bench.json"
+    assert tool.main([case.name, "--seeds", "1", "--jobs", "1", "--check", "--json", str(saved)]) == 0
+    assert json.loads(saved.read_text(encoding="utf-8")) == results
+    rows = tool.summarize(results)
+    assert rows[case.name]["pan"]["starts_min"] == 0 and tool.check(rows) == []
+    rows[case.name]["pan"]["starts_min"] = 29.9  # as at 0d953f9
+    assert tool.check(rows) == ["walk1.2-p400-50: pan starts_min 29.90 > 10"]
+    with pytest.raises(ValueError):
+        tool.Case.parse("walk1.2-p400")
 
 
 def test_version_is_the_same_everywhere():
