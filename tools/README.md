@@ -27,6 +27,7 @@ stop command, also when you press Ctrl+C. Don't run movement tests while a camer
 | `discover.py` | Finds NDI sources, BirdDog cameras (REST API), MR18/X Air mixers and vMix | no |
 | `ndi_probe.py` | Lists NDI sources, or receives one: frame rate, resolution, timing, snapshot | no |
 | `visca_probe.py HOST info` | Reads power, pan/tilt, zoom and focus over VISCA | no |
+| `visca_probe.py HOST ramp` | Asks for Sony's ramp curve and pan-tilt slow mode: the value, or "not supported" | no |
 | `visca_probe.py HOST --yes move ...` | Drives pan/tilt for a moment | **yes** |
 | `visca_probe.py HOST --yes sweep ...` | Measures every speed step (with FreeD if given) | **yes** |
 | `visca_probe.py HOST --transport udp ...` | The same for PTZOptics (plain VISCA, UDP 1259; `tcp` = 5678) | - |
@@ -51,6 +52,7 @@ Do this for one camera first; the others only need steps 1–3.
 .venv\Scripts\python tools\ndi_probe.py "<NDI name>" --seconds 10 --snapshot
 .venv\Scripts\python tools\ndi_probe.py "<NDI name>" --seconds 10 --low-bandwidth
 .venv\Scripts\python tools\visca_probe.py <camera IP> info
+.venv\Scripts\python tools\visca_probe.py <camera IP> ramp
 .venv\Scripts\python tools\freed_probe.py --port 40001 --seconds 10 --csv
 .venv\Scripts\python tools\visca_probe.py <camera IP> --yes sweep --axis pan --freed-port 40001
 .venv\Scripts\python tools\visca_probe.py <camera IP> --yes sweep --axis tilt --speeds 1-20 --freed-port 40001
@@ -58,6 +60,12 @@ Do this for one camera first; the others only need steps 1–3.
 .venv\Scripts\python tools\vmix_tally.py <vMix PC IP> --seconds 60
 .venv\Scripts\python tools\recorder.py "<NDI name>" --freed-port 40001 --seconds 120
 ```
+
+For smooth tight shots, also run the pan sweep at full tele (`visca_probe.py <camera IP> --yes zoom --to 16384`
+first), once with the P400's Adaptive P/T (camera menu, Pan Tilt Zoom) on and once off; on a G2 the same with
+SpeedByZoom. If the speeds at tele differ between the two runs, the camera slows VISCA moves by zoom itself, and
+TrackXen's speed tables (one per camera, not per zoom) are right only with it off. `ramp` only asks: a camera
+that answers with values can soften its own moves, one that says "not supported" leaves it all to TrackXen.
 
 During the FreeD probe, move the camera with its remote or a controller, so the numbers change.
 During the recording, have someone walk across the stage, sit down, stand up and talk at the podium.

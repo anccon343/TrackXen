@@ -5,6 +5,7 @@ command (also on Ctrl+C). `info` only reads: it sends no stop, so it never halts
 vMix, an operator or TrackXen.
 
   python tools/visca_probe.py 192.168.1.50 info
+  python tools/visca_probe.py 192.168.1.50 ramp      (does the camera have Sony's ramp curve / pan-tilt slow?)
   python tools/visca_probe.py 192.168.1.50 move --pan right --speed 3 --seconds 2 --yes
   python tools/visca_probe.py 192.168.1.50 sweep --axis pan --speeds 1-24 --freed-port 40001 --yes
   python tools/visca_probe.py 192.168.1.50 stop
@@ -75,6 +76,38 @@ async def cmd_info(client: visca.ViscaClient, args) -> None:
         print(f"focus (VISCA units): {focus}")
     except visca.ViscaError as e:
         print(f"focus inquiry failed: {e}")
+
+
+# Sony's read-only inquiries for how the camera itself ramps and how slow it can turn (BRC-X400 VISCA list): ramp
+# curve 8x 09 06 31 FF (set with 8x 01 06 31 0p FF) and pan-tilt slow 8x 09 06 44 FF (8x 01 06 44 0p FF, 2 = on,
+# 3 = off). Neither the P400 nor the G2 documents them; a camera without them answers 90 60 02 FF (syntax error).
+RAMP_INQUIRIES = [
+    ("ramp curve", bytes([0x81, 0x09, 0x06, 0x31, 0xFF]), str),
+    ("pan-tilt slow", bytes([0x81, 0x09, 0x06, 0x44, 0xFF]), lambda v: {2: "on", 3: "off"}.get(v, f"value {v}")),
+]
+
+
+async def cmd_ramp(client: visca.ViscaClient, args) -> None:
+    """Ask for the ramp curve and pan-tilt slow mode. Only inquiries: nothing is set, nothing moves."""
+    rows = []
+    for name, msg, meaning in RAMP_INQUIRIES:
+        try:
+            data = await client.inquiry(msg)
+            if len(data) == 1 and data[0] <= 0x0F:
+                answer = meaning(data[0])
+            else:
+                answer = f"unexpected reply {data.hex(' ') or '(empty)'}"
+            reply = data.hex(" ")
+        except visca.ViscaError as e:
+            text = str(e)
+            answer = ("no reply (not supported, or the camera ignores it)" if text.startswith("no reply")
+                      else f"not supported ({text.rsplit(': ', 1)[-1]})")
+            reply = ""
+        print(f"{name} ({msg.hex(' ')}): {answer}")
+        rows.append([name, msg.hex(" "), reply, answer])
+    path = results_path("visca-ramp")
+    write_csv(path, ["inquiry", "sent", "reply_data", "answer"], rows)
+    print(f"saved {path}")
 
 
 async def cmd_move(client: visca.ViscaClient, args) -> None:
@@ -220,7 +253,7 @@ async def cmd_zoom_range(client: visca.ViscaClient, args) -> None:
     print(f"saved {path}")
 
 
-COMMANDS = {"info": (cmd_info, False), "move": (cmd_move, True), "zoom": (cmd_zoom, True),
+COMMANDS = {"info": (cmd_info, False), "ramp": (cmd_ramp, False), "move": (cmd_move, True), "zoom": (cmd_zoom, True),
             "preset": (cmd_preset, True), "sweep": (cmd_sweep, True), "calibrate": (cmd_calibrate, True),
             "zoom-range": (cmd_zoom_range, True), "stop": (None, False)}
 DEFAULT_PORTS = {"sony": visca.VISCA_PORT, "udp": visca.PLAIN_UDP_PORT, "tcp": visca.TCP_PORT}
@@ -263,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     yes.add_argument("--yes", action="store_true", default=argparse.SUPPRESS, help="confirm that the camera may move")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("info", help="read power, pan/tilt, zoom and focus (no movement)")
+    sub.add_parser("ramp", help="ask for Sony's ramp curve and pan-tilt slow mode (only reads, no movement)")
     sub.add_parser("stop", help="stop pan, tilt and zoom")
     m = sub.add_parser("move", parents=[yes], help="drive pan/tilt for a few seconds")
     m.add_argument("--pan", choices=["left", "right"])

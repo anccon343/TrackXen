@@ -75,6 +75,40 @@ def test_visca_probe_info_only_reads(monkeypatch):
     assert asyncio.run(run("stop")) == stops
 
 
+class SonyRampCamera(FakeCamera):
+    """A FakeCamera that also answers Sony's ramp curve (8) and pan-tilt slow (off) inquiries."""
+
+    def _handle(self, msg: bytes, addr, seq: int) -> None:
+        answer = {b"\x09\x06\x31": b"\x08", b"\x09\x06\x44": b"\x03"}.get(msg[1:4])
+        if answer is None:
+            return super()._handle(msg, addr, seq)
+        self._reply(addr, visca.PT_REPLY, b"\x90\x50" + answer + b"\xff", seq)
+
+
+@pytest.mark.parametrize("camera, answers", [(FakeCamera, ["not supported (syntax error)"] * 2),
+                                             (SonyRampCamera, ["8", "off"])])
+def test_visca_probe_ramp_only_asks(monkeypatch, tmp_path, capsys, camera, answers):
+    """`ramp` sends the two inquiries and nothing else (no --yes, no stop), and says what came back."""
+    tool = load_tool("visca_probe", monkeypatch)
+    monkeypatch.setattr(tool, "results_path", lambda name: tmp_path / f"{name}.csv")
+
+    async def run() -> list[bytes]:
+        cam = camera()
+        port = await cam.start(port=0)
+        try:
+            args = tool.build_parser().parse_args(["127.0.0.1", "--port", str(port), "--timeout", "0.2", "ramp"])
+            assert await tool.main(args) == 0
+            return cam.received
+        finally:
+            cam.stop()
+
+    assert asyncio.run(run()) == [b"\x81\x09\x06\x31\xff", b"\x81\x09\x06\x44\xff"]
+    out = capsys.readouterr().out
+    assert f"ramp curve (81 09 06 31 ff): {answers[0]}" in out and f"pan-tilt slow (81 09 06 44 ff): {answers[1]}" in out
+    saved = (tmp_path / "visca-ramp.csv").read_text(encoding="utf-8").splitlines()
+    assert [row.rsplit(",", 1)[1] for row in saved[1:]] == answers
+
+
 def test_env_check_fails_when_the_onnxruntime_check_dies(monkeypatch, tmp_path):
     """A child process that crashes (missing ONNX Runtime, a DLL that doesn't load) is a failure."""
     monkeypatch.setenv("YOLO_AUTOINSTALL", "False")
