@@ -61,8 +61,8 @@ def test_pan_tilt_smoothness_is_1_to_10_and_defaults_to_5():
 
 
 def test_smoothness_scales_the_camera_motion_profile():
-    """1 is the motion as it was before (no feed-forward low-pass, nearest step, no S-curve); the default leaves the
-    camera's profile as it is; 10 is the softest. Factors, so a hand-tuned profile keeps its proportions."""
+    """1 is the liveliest (no feed-forward low-pass, the nearest step, no S-curve); the default leaves the camera's
+    profile as it is; 10 is the softest. Factors, so a hand-tuned profile keeps its proportions."""
     from trackxen.control.controller import Motion
     from trackxen.core.tracking_settings import manual_ramp, smoothness_motion
 

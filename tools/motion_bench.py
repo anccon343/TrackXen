@@ -36,8 +36,9 @@ Tilt rows are left out where the tilt hardly moved (under 0.3 step changes a sec
 standing and stop-and-go have their own start limits; with the Halting Area off the tilt does not hunt (30
 reversals a minute); the head is never more than 25 % of the picture from its display position; and framing
 (err_p95) stays within REFERENCE x 1.25 + 0.5, REFERENCE being this tool's own measurement of the standard cases
-when it was added. At 0d953f9 (before the smoothness work) 21 limits break; now none at Pan/Tilt Smoothness 1
-and 5, and three at 10 (a brisk walker in a tight shot on air: the cost of the softest level).
+when it was added. At 0d953f9 (before the smoothness work) 31 limits break (21 smoothness and far-off limits,
+10 framing-reference ones); now none at Pan/Tilt Smoothness 1 and 5, and three at 10 (a brisk walker in a tight
+shot on air: the cost of the softest level).
 
 Not a camera test: the real cameras' speed tables, internal ramps and delays are estimates until measured
 with visca_probe.py (sweep, ramp) and stream_probe.py. The bench shows what TrackXen's own motion does.

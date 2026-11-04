@@ -260,11 +260,13 @@ def sensitivity_gain(sensitivity: int) -> float:
 
 # Pan/Tilt Smoothness, measured with a closed-loop harness (the real session, controller, link and VISCA code against
 # a fake P400 and G2 with detector noise, head bob and sway; a person 15 m away walking, stopping and standing):
-# - 1 (liveliest) is the motion as it was: the raw Kalman speed for feed-forward, the nearest speed step, a constant
-#   acceleration of the profile's max_accel, and joystick moves sent as they are;
+# - 1 (liveliest): no feed-forward low-pass (the raw Kalman speed), the nearest speed step, a constant acceleration of
+#   the profile's max_accel, and joystick moves sent as they are. Not the motion as it was before 2026-11: following a
+#   walker in one movement, the minimum dead zone, keeping up in tight shots, waiting for a walker, no turning back
+#   inside the dead zone and the position moved on to now apply at every level;
 # - 5 (the default) is the camera's motion profile as it stands (Motion's defaults: feed-forward low-pass 0.15 s, step
-#   hysteresis 0.25): no stop-starts while a person walks, framing as good or better than before except a little
-#   overshoot when a person stops; and a 0.22 s joystick ramp;
+#   hysteresis 0.25): no stop-starts while a person walks, framing as good or better than before except when a person
+#   stops in a tight shot (overshoot) and with a low Tracking Sensitivity in a tight shot; and a 0.22 s joystick ramp;
 # - 10 (softest) low-passes the person's speed over 0.4 s, holds speed steps longer (hysteresis 0.35), builds the
 #   acceleration up over 0.3 s (an S-curve) to 0.75 of max_accel, and ramps the joystick over 0.5 s. That still keeps a
 #   1.2 m/s walker 15 m away in the picture at an 8-degree view (and 5), on air too; zoom-scaled acceleration did not:

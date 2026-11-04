@@ -133,9 +133,18 @@ Cameras page under Tracking Sensitivity.
   the time the head is within about 17 % of the picture of its position at 5 and 21 % at 10; a brisk
   walker (1.2 m/s) on a live G2, within about 7 % at 5 and 15 % at 10. In wide shots the difference is
   small.
-- A **lower Tracking Sensitivity** also calms a tight shot, but lags a fast walker more.
+- A **lower Tracking Sensitivity** also calms a tight shot, but lags a fast walker more, and the
+  Smoothness adds to that lag: at sensitivity 3 in an 8-degree shot, a brisk walker is within about 7 %
+  of the picture 95 % of the time at Smoothness 1 (as before), 10 % at 5 and 19 % at 10 (a G2: 13 % at
+  5, 23 % at 10). Combine a low sensitivity with a low Smoothness in tight shots.
+- **When a walking person stops,** the camera eases to a stop a little past them (it follows the walk,
+  and the picture reaches TrackXen a moment late). Inside the Pan/Tilt Halting Area it stays there
+  instead of turning back; in a tight shot the overshoot is bigger than the halting area and it comes
+  back.
 - With the **Pan/Tilt Halting Area off**, a small quiet zone stays: 0.15 degrees (a G2: 0.46 degrees,
-  from its slowest speed), so the tilt doesn't follow the bob of a walking head.
+  from its slowest speed), so the tilt doesn't follow the bob of a walking head. On a G2 in a tight
+  shot that costs a little framing: a slowly drifting person at 8 degrees is within about 6 % of the
+  picture 95 % of the time, against 4 % before (with 44 instead of 122 starts a minute).
 
 **The arrow buttons** (PTZ tab, and around the wizard's picture) are smoothed by the same setting:
 TrackXen ramps the pan and tilt speed up and down along an S-curve instead of jumping to the button's
