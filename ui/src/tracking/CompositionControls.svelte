@@ -4,7 +4,8 @@
   import NumberSlider from "../ui/NumberSlider.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
-  // Canon's Composition settings (wizard step 5, also on the Tracking Execution screen).
+  // Canon's Composition settings (wizard step 5, also on the Tracking Execution screen), and beyond Canon
+  // Pan/Tilt Smoothness.
   let { slot, help = false }: { slot: AppSettings; help?: boolean } = $props();
   let c = $derived(slot.composition);
   let sitStand = $derived(slot.auto_framing.enabled && slot.auto_framing.sit_stand.enabled);
@@ -41,6 +42,11 @@
 <span class="label">Tracking Sensitivity</span>
 <NumberSlider value={slot.sensitivity} min={1} max={10} step={1} onchange={(v) => slots.patch({ sensitivity: v })} />
 {#if help}<p class="help">Higher follows more nimbly but may jump to people nearby. 1 is safest when changing target or moving the silhouette far.</p>{/if}
+
+<span class="label">Pan/Tilt Smoothness</span>
+<NumberSlider value={slot.smoothness} min={1} max={10} step={1} minLabel="lively" maxLabel="smooth"
+              onchange={(v) => slots.patch({ smoothness: v })} />
+{#if help}<p class="help">Higher starts, stops and changes speed more softly, also for the PTZ buttons and Companion. 1 is the liveliest. High values lag a little more when the target stops and starts.</p>{/if}
 
 <style>
   .row { display: flex; justify-content: space-between; align-items: center; min-height: 34px; gap: 8px; }

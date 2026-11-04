@@ -21,6 +21,7 @@ export interface AppSettings {
   composition: Framing;
   halting_area: boolean;
   sensitivity: number;
+  smoothness: number; // Pan/Tilt Smoothness 1..10 (beyond Canon): higher is softer
   exclusion_areas: Area[];
   halting_areas: Area[];
   auto_framing: {
