@@ -209,6 +209,13 @@ class Controller:
         error[0] = (error[0] + 180) % 360 - 180
         # pinned at a limit and coasted past it (the person is beyond it): come back inside, don't rest out there
         past = [held[i] and error[i] * (aim[i] - allowed[i]) < 0 and abs(error[i]) > 0.02 for i in (0, 1)]
+        if self.constrain:
+            # the camera itself outside the limits, whatever the aim (it coasted past a person who stopped just inside
+            # one): come back inside, too
+            inside = self.constrain(pose.pan, pose.tilt, hfov, vfov)
+            for i, here in enumerate((pose.pan, pose.tilt)):
+                if abs(inside[i] - here) > 0.02 and error[i] * (inside[i] - here) > 0:
+                    past[i] = True
         tables = (self.speeds.pan, self.speeds.tilt)
         dead = [max(f.dead_zone_x * hfov, MIN_DEAD_ZONE, tables[0][0] * SLOWEST_STEP_COAST),
                 max(f.dead_zone_y * vfov, MIN_DEAD_ZONE, tables[1][0] * SLOWEST_STEP_COAST)]
@@ -229,11 +236,14 @@ class Controller:
                 self._moving[axis], self._dir[axis] = True, 0
             elif self._moving[axis] and abs(err) < dead[axis] * m.settle_ratio and not walking and not past[axis]:
                 self._moving[axis] = False
-            feedforward = 0.0 if held[axis] else m.feedforward * target_speed[axis]
+            # pinned at a limit, or past one: no feed-forward, no waiting for a walker (past one, the walk's speed would
+            # drive the camera out again and it would flap at the limit): it comes back inside on the error alone
+            pinned = held[axis] or past[axis]
+            feedforward = 0.0 if pinned else m.feedforward * target_speed[axis]
             wanted = feedforward + m.gain * err if self._moving[axis] else 0.0
             # ahead of a walking person (caught up late and overshot): wait for them, don't turn back against the walk
             # (still walking now, too: when the person stops, the low-passed speed takes a while to drop)
-            ahead = (walking and not held[axis] and err * target_speed[axis] < 0
+            ahead = (walking and not pinned and err * target_speed[axis] < 0
                      and (vp, vt)[axis] * target_speed[axis] > slow * abs(target_speed[axis]))
             if ahead and wanted * target_speed[axis] < 0:
                 wanted = 0.0
@@ -257,8 +267,10 @@ class Controller:
                     step = 1 if (wanted if wanted else err) > 0 else -1
             steps[axis] = self._step[axis] = _hysteresis(table, self._step[axis], step, wanted, m.step_hysteresis)
 
-        # an axis catching up blocks the zoom; one following a walker inside the dead zone doesn't
-        zoom = self._zoom(obs, pose, tt, vfov, any(self._moving[i] and not following[i] for i in (0, 1)))
+        # an axis catching up blocks the zoom; one following a walker inside the dead zone doesn't, nor one only coming
+        # back inside a limit (a zoom-out moves the limit inward at every tick: the zoom and the pan would take turns)
+        zoom = self._zoom(obs, pose, tt, vfov, any(self._moving[i] and not following[i]
+                                                   and not (past[i] and abs(error[i]) <= dead[i]) for i in (0, 1)))
         return Command(steps[0], steps[1], zoom, debug={
             "state": "moving" if any(self._moving) else "holding", "error": [round(e, 3) for e in error],
             "dead_zone": [round(d, 3) for d in dead], "velocity": [round(v, 3) for v in self._velocity],

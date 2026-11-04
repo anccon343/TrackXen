@@ -475,6 +475,48 @@ def test_a_camera_that_coasted_past_a_limit_comes_back_inside_it(ptz):
     assert all(c[1] == 0 for c in commands[-100:])  # at rest inside, no hunting
 
 
+@pytest.mark.parametrize("ptz", [False, True])
+@pytest.mark.parametrize("stop", [4.3, 4.6])
+def test_a_camera_that_coasted_past_a_limit_comes_back_inside_it_when_the_person_stops_just_inside(ptz, stop):
+    """The person walks up to the limit and stops 0.7 or 0.4 deg inside it: the camera, following at walking speed,
+    coasts past the limit. The aim is not pinned (the person is inside), and the overrun is inside the dead zone, but
+    the picture must not rest past the shooting range for as long as the person stands there (it did, at 5.17-5.19).
+    It comes back once: the walk's feed-forward must not drive it out again (that flapped, 3 reversals)."""
+    def limit(pan, tilt, hfov, vfov):
+        return min(pan, 5.0), tilt
+
+    lens, speeds = ptz_lens_speeds() if ptz else (None, None)
+    _, commands, _, (pan, _) = simulate(lambda t: (min(2.0 * t, stop), -0.27), seconds=14, start_zoom_hfov=24.0,
+                                        command_delay=0.08, video_delay=0.15, lens=lens, speeds=speeds,
+                                        setup=lambda c: setattr(c, "constrain", limit))
+    assert 3.5 < pan <= 5.0 + 0.02, pan
+    assert all(c[1] == 0 for c in commands[-100:])  # at rest inside, no hunting
+    moving = [c[1] for c in commands if c[1]]
+    assert sum(1 for a, b in zip(moving, moving[1:]) if a * b < 0) <= 1  # one come-back, no flapping
+
+
+@pytest.mark.parametrize("ptz", [False, True])
+def test_a_display_size_zoom_out_at_a_limit_runs_in_one_go(ptz):
+    """The person stands beyond the shooting range's right picture edge; Display Size zooms out from 24 to about 33
+    deg. Every zoom tick widens the picture and moves the allowed pan inward, so the pan follows the limit back
+    inside. That come-back must not block the zoom: it did, and the zoom and the pan took turns (10 one-tick zoom
+    pulses, each followed by a step-1 pan start, over 7 s)."""
+    def limit(pan, tilt, hfov, vfov):
+        return min(pan, 12.0 - hfov / 2), tilt  # the picture's right edge at 12
+
+    lens, speeds = ptz_lens_speeds() if ptz else (Lens(), None)
+    person_deg = 0.3 * lens.vfov(lens.zoom_for_hfov(33.0))
+    _, commands, zooms, (pan, _) = simulate(lambda t: (3.0, -0.27), seconds=12, start_zoom_hfov=24.0,
+                                            command_delay=0.08, video_delay=0.15, lens=lens, speeds=speeds,
+                                            framing=Framing(display_size=True, target_height=0.3),
+                                            person_deg=person_deg, setup=lambda c: setattr(c, "constrain", limit))
+    zoom_starts = sum(1 for a, b in zip([(0, 0, 0, 0)] + commands, commands) if a[3] == 0 and b[3] != 0)
+    assert zoom_starts <= 3, zoom_starts
+    assert lens.hfov(zooms[-1]) > 28.0  # zoomed out to the display size...
+    assert pan + lens.hfov(zooms[-1]) / 2 <= 12.0 + 0.02  # ...and the picture ends inside the range
+    assert all(c[1] == 0 and c[3] == 0 for c in commands[-100:])  # at rest
+
+
 def test_a_camera_that_eased_to_a_stop_just_past_a_walker_who_stopped_does_not_turn_back():
     """Following a walker with feed-forward, the camera eases to a stop a little past them when they stop (the video
     and command delays). Inside the dead zone it stays there: turning back at every stop (10-11 reversals a minute in

@@ -140,7 +140,10 @@ Cameras page under Tracking Sensitivity.
 - **When a walking person stops,** the camera eases to a stop a little past them (it follows the walk,
   and the picture reaches TrackXen a moment late). Inside the Pan/Tilt Halting Area it stays there
   instead of turning back; in a tight shot the overshoot is bigger than the halting area and it comes
-  back.
+  back. At a **shooting range** edge it always comes back (one short, slow move), so the picture never
+  rests past the range, even when the person stops just inside it. A Display Size or Auto Zoom
+  zoom-out there runs in one go while the camera pans back inside with it (the picture may show up to
+  about a halting area past the edge for the second or two of the zoom).
 - With the **Pan/Tilt Halting Area off**, a small quiet zone stays: 0.15 degrees (a G2: 0.46 degrees,
   from its slowest speed), so the tilt doesn't follow the bob of a walking head. On a G2 in a tight
   shot that costs a little framing: a slowly drifting person at 8 degrees is within about 6 % of the

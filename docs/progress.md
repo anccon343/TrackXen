@@ -14,7 +14,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
 .venv\Scripts\python tools\motion_bench.py --check   (pan/tilt smoothness in virtual time, about 10 s)
-.venv\Scripts\python -m pytest                  (464 tests)
+.venv\Scripts\python -m pytest                  (470 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -929,6 +929,28 @@ them all together)
   inside the dead zone, so the picture rested past the limit for as long as the person was beyond it
   (24 degrees: 34-46 % of the run). A camera past the limit now comes back inside: at rest past it 0 %
   of the run (12 runs), resting edges 11.66-11.98 degrees for a 12-degree limit.
+- **Shooting range, a person who stops just inside it:** that come-back only came while the aim was
+  pinned at the limit. A person who stopped 0.1-0.7 degrees inside it left the camera, which had coasted
+  past the limit at walking speed, resting out there for as long as they stood. A camera that is itself
+  outside the limits now comes back inside whatever the aim, on the error alone (the walk's
+  feed-forward drove it out again: 3-5 reversals at the limit in a first try). motion_bench rig, 24
+  degrees, limit 12, the person stopping 0.03-0.25 m inside at 15 m, 4 seeds, P400 and G2: at rest past
+  the edge 0-56 % of the run (longest 12.0 s, the whole stand) → 0-0.1 %; pan reversals the same in 27
+  of 28 runs (one more in the other: its come-back), pan starts 8-28 → 8-11 a minute. The simulator's
+  range scenario: rightmost edge 12.00-12.47 and at rest past it 0-15 % of the samples (2 runs) →
+  12.03-12.11 and 0 %.
+- **Display Size or Auto Zoom zooming out at a shooting range edge** with the person beyond it: every
+  zoom tick widens the picture and moves the allowed pan inward, the move back inside held the zoom
+  back, and the zoom and the pan took turns (one-tick zoom pulses, a step-1 pan start after each). A
+  move back inside within the dead zone no longer holds the zoom: it runs in one go and the pan follows
+  the limit. The person 3 m beyond the right edge at 15 m, 24 → 33 degrees, 4 seeds: P400 7-14 zoom
+  starts over 5.8-9.1 s with 5-11 pan starts → 4 over 1.6-1.7 s with none; on air (slow zoom) 12-17
+  over 8.5-10.3 s → 1 over 2.1-2.4 s; G2 4-8 → 4-6 over 1.9-2.0 s (on air 9-11 → 1), no pan starts.
+  The cost: during the zoom the picture's edge goes up to 1.9 degrees past it (on air and on a G2 up to
+  2.2; before, 0.5-2.2 spread over 2-10 s), about a halting area, 3.2-4.2 degree-seconds against
+  0.7-2.6; it is back inside when the zoom ends. With the Halting Area off the zoom still stops and
+  starts (14-19 times; the error is past its 0.15-degree dead zone, as before), but the pan no longer
+  does (9-12 pan starts → 0).
 - **Auto Tracking off when it is already off** (the joystick press switched it off: Restart Tracking
   After Manual Operation off) stops a joystick move that is still slowing down at once, as documented:
   0.16 s at Smoothness 5 and 0.44 s at 10 → 0.
@@ -1004,7 +1026,7 @@ makes 9.3 on average, 0-19.6 per seed, so a limit of 10 failed or passed with th
   above Smoothness 5.
 - **Not checked on the cameras:** run `visca_probe.py HOST ramp`, the pan sweep at full tele with
   Adaptive P/T (G2: SpeedByZoom) on and off, and a FreeD log of a walking speaker on a P400.
-- **Tests:** 53 new (50 engine, 3 tools); 460 passed and 4 skipped (environmental). ruff, svelte-check
+- **Tests:** 59 new (56 engine, 3 tools); 466 passed and 4 skipped (environmental). ruff, svelte-check
   and the UI build are clean.
 
 ## Audits
