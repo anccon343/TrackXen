@@ -25,9 +25,10 @@ from trackxen.control.camera import CameraLink, Pose
 from trackxen.control.controller import Controller, Observation, SpeedTable, cut_at_bottom
 from trackxen.control.kalman import AngleKalman
 from trackxen.control.lens import Lens
+from trackxen.control.shaper import ManualShaper
 from trackxen.core.config import CameraConfig
 from trackxen.core.tracking_settings import (SLOTS, AppSettings, Area, PresetLink, View, default_slots, merge,
-                                             sensitivity_gain, smoothness_motion, view_area)
+                                             manual_ramp, sensitivity_gain, smoothness_motion, view_area)
 from trackxen.rules import areas as rules
 from trackxen.rules.framing import Framer, Shot
 from trackxen.rules.geometry import area_from_view, area_to_view, view_edges, view_to_room
@@ -96,6 +97,8 @@ class CameraSession:
         self.engine = ""
         self.manual_until = 0.0
         self._manual_active = False
+        self._manual_want = (0, 0, 0)  # the joystick's speed steps while held
+        self.shaper = ManualShaper(SpeedTable(cfg.pan_speeds, cfg.tilt_speeds))  # ramps them (Pan/Tilt Smoothness)
         self.last_command = (0, 0, 0)
         self.debug: dict = {}
         self.settings_rev = 0  # bumped on every settings change, so pages know to reload them
@@ -304,7 +307,7 @@ class CameraSession:
         self.lost_since, self.went_home = None, False
         self._event("tracking", ("auto tracking on" if on else "auto tracking off") + (f": {reason}" if reason else ""))
         if not on:
-            self.link.request(0, 0, 0)
+            self.halt()
         elif start_at_initial and self.target_id is None and self.slot.initial.set:
             self.go_to(self.slot.initial, "initial position")  # Canon: the view tracking starts from
 
@@ -344,20 +347,38 @@ class CameraSession:
         self.last_seen = time.monotonic()
 
     def manual(self, pan: int, tilt: int, zoom: int, hold: float = 0.3) -> None:
-        """Joystick/buttons in this app: they override tracking while held. With "Restart
-        Tracking After Manual Operation" off, a press turns Auto Tracking off (Canon's rule).
+        """Joystick/buttons in this app, Companion and the API: they override tracking while held. With
+        "Restart Tracking After Manual Operation" off, a press turns Auto Tracking off (Canon's rule).
 
         The page repeats the command while a button is held; if it stops repeating (released,
-        or the connection dropped), tick() stops the camera when the hold runs out.
+        or the connection dropped), tick() stops the camera when the hold runs out. Pan and tilt speed
+        changes, the stop included, are ramped with the slot's Pan/Tilt Smoothness (control/shaper.py):
+        at most manual_ramp() s (0.5 s at 10; at 1 they are sent as they are).
         """
+        now = time.monotonic()
         if pan or tilt or zoom:
-            self.manual_at, self.cue = time.monotonic(), None
+            self.manual_at, self.cue = now, None
         if (pan or tilt or zoom) and self.tracking and not self.slot.restart_after_manual:
             self._manual_operation("moved with the joystick")
         self.move = None
-        self.manual_until = time.monotonic() + hold
+        self.manual_until = now + hold
         self._manual_active = True
-        self._send(pan, tilt, zoom)
+        self._manual_want = (pan, tilt, zoom)
+        self._send_manual(now, pan, tilt, zoom)
+
+    def _send_manual(self, now: float, pan: int, tilt: int, zoom: int) -> None:
+        """Joystick speeds, pan and tilt ramped."""
+        pose = self.link.pose_now()
+        fov = None if pose is None else (self.lens.hfov(pose.zoom), self.lens.vfov(pose.zoom))
+        self.shaper.want(now, pan, tilt, manual_ramp(self.slot.smoothness), fov)
+        self._send(*self.shaper.steps(now), zoom)
+
+    def halt(self) -> None:
+        """Stop at once, never ramped (STOP ALL, the watchdog, tracking off, closing the camera): a joystick move
+        under way is over (a button still held starts again from rest with its next repeat)."""
+        self.shaper.reset()
+        self._manual_want, self.manual_until = (0, 0, 0), 0.0
+        self._send(0, 0, 0)
 
     def click_center(self, x: float, y: float) -> None:
         """Canon's Click Centering: turn so this point of the picture (0..1) comes to the middle."""
@@ -409,6 +430,7 @@ class CameraSession:
         elif self.tracking:
             self._manual_operation(f"preset {number} recalled")
         now = time.monotonic()
+        self.halt()  # (a joystick move slowing down would cancel the recall)
         move = self.move = Move(f"preset {number}", None, now, now + 20.0, then_track)
 
         def failed() -> None:
@@ -421,6 +443,7 @@ class CameraSession:
     def go_to(self, view: View, reason: str) -> None:
         """Absolute move to a viewing angle at the motion profile's top speed."""
         now = time.monotonic()
+        self.halt()  # (a joystick move slowing down would cancel it)
         pose = self.link.pose_now()
         m = self.controller.motion  # slower while on air
         pan_step = max(1, SpeedTable.step_for(self.cfg.pan_speeds, m.max_pan))
@@ -529,6 +552,7 @@ class CameraSession:
         if preset and not slow:
             self.select_id(None, "audio cue")
             self.set_tracking(False, "audio cue: moving to the preset")  # (first: off drops a pending start)
+            self.halt()
             self.move = Move(f"preset {preset} for {label or f'mic {channel}'}", None, now, now + 20.0, then_track=True)
             self._spawn(self.link.recall_preset(preset - 1), f"preset {preset} recall")
             self.cue = (face, label, now + CUE_TIMEOUT + 20.0, channel)  # plus the move
@@ -682,9 +706,11 @@ class CameraSession:
             step = 0.02 / AIR_BLEND_S
             self.air = min(goal, self.air + step) if goal > self.air else max(goal, self.air - step)
             self._apply_air()
-        if now < self.manual_until:
-            return
-        if self._manual_active:  # manual control just ended: never leave the camera moving
+        if self._manual_active:  # the joystick's speeds while held, a stop once the hold runs out
+            self._send_manual(now, *(self._manual_want if now < self.manual_until else (0, 0, 0)))
+            if now < self.manual_until or not self.shaper.idle:
+                return  # held, or still slowing down
+            # manual control just ended: never leave the camera moving
             self._manual_active = False
             self._send(0, 0, 0)
             self.controller.hold()
@@ -804,6 +830,7 @@ class CameraSession:
         if not self.no_video:
             self.counts["watchdog_stops"] += 1
             self.no_video = True
+            self.halt()  # (the watchdog stops the camera too, at once)
             self.controller.hold()  # the camera is stopped: motion starts again from standstill
             self._event("video", "no detections arriving: camera stopped", level="error")
 

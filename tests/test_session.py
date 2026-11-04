@@ -163,11 +163,11 @@ def test_old_tracks_are_not_mistaken_for_the_target():
 
 
 def test_releasing_manual_control_stops_the_camera():
-    s, _ = new_session()
+    s, _ = new_session(smoothness=1)  # (Pan/Tilt Smoothness 1: the joystick's speeds go out as they are)
     s.manual(5, 0, 0, hold=0.0)
     assert s.link.requests[-1] == (5, 0, 0)
     s.tick(time.monotonic() + 0.01)
-    assert s.link.requests[-1] == (0, 0, 0)
+    assert s.link.requests[-1] == (0, 0, 0) and not s._manual_active
 
 
 def test_status_without_auto_select_is_no_target_and_with_it_searching():
@@ -385,9 +385,12 @@ def test_fixed_area_waits_while_the_joystick_is_held():
     s.select_id(1)
     s.set_tracking(True)
     s.manual(-8, 0, 0)  # the operator holds the joystick in the app
+    now = time.monotonic()
+    s.tick(now + 0.25)  # (up to speed: ramped with the Pan/Tilt Smoothness)
     s.on_tracks(message([track(1, 960)]))  # the target walks into the fixed area meanwhile
     assert not s.link.gotos and s.link.requests[-1] == (-8, 0, 0)
-    s.tick(time.monotonic() + 0.4)  # released
+    for t in (0.4, 0.45, 0.5, 0.55):  # released, slowing down
+        s.tick(now + t)
     s.on_tracks(message([track(1, 960)]))
     assert s.state == ANGLE_FIXED and s.link.gotos == [(0.5, 3.0, 4000.0)]
 
@@ -584,3 +587,98 @@ def test_pan_tilt_smoothness_reaches_the_controller_and_composes_with_on_air():
     m = s.controller.motion  # the on-air share multiplies on top of the slot's
     assert m.max_accel == pytest.approx(45.0 * 0.75 * 0.35) and m.jerk_time == pytest.approx(0.3)
     assert m.max_pan == 15.0 and m.ff_tau == pytest.approx(0.4)
+
+
+# --- the joystick's middle layer: ramped with the Pan/Tilt Smoothness, safety stops at once ---------------------
+
+class Clock:
+    def __init__(self, t: float):
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = Clock(time.monotonic())
+    monkeypatch.setattr(time, "monotonic", c)
+    return c
+
+
+def joystick(s, clock, pan, seconds, repeat=0.15):
+    """`seconds` of the app's 20 ms ticks while the page repeats manual(pan) every 0.15 s (pan None: no repeats,
+    the button was let go or the connection dropped). The requests to the camera, with their times."""
+    out, end, next_repeat = [], clock.t + seconds, clock.t
+    while clock.t < end - 1e-9:
+        if pan is not None and clock.t >= next_repeat - 1e-9:
+            s.manual(pan, 0, 0)
+            next_repeat += repeat
+        s.tick(clock.t)
+        out.append((clock.t, s.link.requests[-1]))
+        clock.t += 0.02
+    return out
+
+
+def test_a_joystick_press_ramps_up_instead_of_jumping_to_its_speed(clock):
+    s, _ = new_session()  # Pan/Tilt Smoothness 5
+    t0 = clock.t
+    s.manual(18, 0, 0)
+    assert s.link.requests[-1] != (18, 0, 0)  # not at once from rest to 57 deg/s
+    up = joystick(s, clock, 18, 0.4)
+    pans = [r[0] for _, r in up]
+    assert all(a <= b for a, b in zip(pans, pans[1:])) and len(set(pans)) >= 6 and pans[-1] == 18
+    assert max(b - a for a, b in zip(pans, pans[1:])) <= 4
+    assert next(t for t, r in up if r[0] == 18) - t0 <= 0.22 + 0.02  # within the ramp at 5 and a tick
+
+
+@pytest.mark.parametrize("smoothness, ramp", [(5, 0.22), (10, 0.5)])
+def test_letting_go_of_the_joystick_slows_the_camera_to_a_stop_within_the_ramp(clock, smoothness, ramp):
+    s, _ = new_session(smoothness=smoothness)
+    joystick(s, clock, 18, 1.0)
+    assert s.link.requests[-1] == (18, 0, 0)
+    t0 = clock.t
+    s.manual(0, 0, 0)  # let go (the page sends the stop)
+    down = [(t0, s.link.requests[-1])] + joystick(s, clock, None, 0.8)
+    pans = [r[0] for _, r in down]
+    assert all(a >= b >= 0 for a, b in zip(pans, pans[1:])) and len(set(pans)) >= 6  # slowed down, never reversed
+    assert next(t for t, r in down if r == (0, 0, 0)) - t0 <= ramp + 0.02
+    assert not s._manual_active  # over: tracking may take the camera again
+
+
+def test_a_joystick_whose_repeats_stop_arriving_is_slowed_to_a_stop_after_the_hold(clock):
+    """The page closed or the connection dropped: no release arrives. The camera stops at most the hold (0.3 s)
+    plus the ramp (0.5 s at Pan/Tilt Smoothness 10) after the last repeat."""
+    s, _ = new_session(smoothness=10)
+    joystick(s, clock, 12, 1.0)
+    last_repeat = s.manual_until - 0.3
+    after = joystick(s, clock, None, 1.0)
+    stopped = next(t for t, r in after if r == (0, 0, 0)) - last_repeat
+    assert 0.3 < stopped <= 0.3 + 0.5 + 0.02 and not s._manual_active
+
+
+def test_pan_tilt_smoothness_1_sends_joystick_speeds_as_they_are():
+    s, _ = new_session(smoothness=1)
+    s.manual(18, -7, 2)
+    assert s.link.requests[-1] == (18, -7, 2)
+    s.manual(0, 0, 0)
+    assert s.link.requests[-1] == (0, 0, 0)
+
+
+@pytest.mark.parametrize("stop", ["halt", "watchdog", "tracking off", "preset", "click centering"])
+def test_safety_stops_and_absolute_moves_end_a_joystick_move_at_once(clock, stop):
+    """STOP ALL (session.halt), the watchdog, tracking off: the camera stops at once, never ramped down, and
+    stays stopped (nothing ramps on afterwards). An absolute move takes over at once (a drive command would
+    cancel it)."""
+    s, _ = new_session(smoothness=10, restart_after_manual=True)
+    s.on_tracks(message([track(1, 960)]))
+    s.select_id(1)
+    s.set_tracking(True)
+    joystick(s, clock, 18, 1.0)
+    s.manual(0, 0, 0)
+    joystick(s, clock, None, 0.1)  # slowing down
+    assert s.link.requests[-1][0] > 5
+    {"halt": s.halt, "watchdog": s.video_stopped, "tracking off": lambda: s.set_tracking(False),
+     "preset": lambda: s.recall_preset(3), "click centering": lambda: s.click_center(0.6, 0.5)}[stop]()
+    assert s.link.requests[-1] == (0, 0, 0)
+    assert all(r == (0, 0, 0) for _, r in joystick(s, clock, None, 0.6))

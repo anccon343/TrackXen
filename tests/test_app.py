@@ -698,6 +698,36 @@ def test_stop_all_stops_every_camera_at_once(tmp_path, workers, stub_links):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("stop", ["stop_all", "close"])
+def test_stop_all_and_closing_cut_a_joystick_move_slowing_down(tmp_path, workers, stub_links, stop):
+    """A joystick move is ramped with the Pan/Tilt Smoothness (here 10: up to 0.5 s to slow down). STOP ALL, and
+    closing the camera's connection (settings applied: the old session is still ticked meanwhile), stop it at once:
+    nothing is ramped down after them."""
+    async def scenario():
+        app = make_app(tmp_path, config("cam1"))
+        await app.start()
+        try:
+            s = app.sessions["cam1"]
+            s.update_slot({"smoothness": 10})
+            for _ in range(5):  # held (the page repeats it)
+                s.manual(18, 0, 0)
+                await asyncio.sleep(0.15)
+            s.manual(0, 0, 0)  # let go
+            await asyncio.sleep(0.1)
+            assert s.link.requests[-1][0] > 5  # still slowing down
+            if stop == "stop_all":
+                assert (await app.command({"type": "stop_all"}))["ok"]
+            else:
+                await app._close_links([s])
+            n = len(s.link.requests)
+            await asyncio.sleep(0.6)
+            assert s.link.requests[n - 1] == (0, 0, 0) and set(s.link.requests[n - 1:]) == {(0, 0, 0)}
+        finally:
+            await app.stop()
+
+    asyncio.run(scenario())
+
+
 def test_stop_all_while_settings_are_applied_keeps_audio_follow_off(tmp_path, workers, stub_links, monkeypatch):
     """The operator's Audio follow and On Air switches carry over to the cameras an Apply makes again,
     and a STOP ALL pressed while the cameras are being started again is not undone by that."""

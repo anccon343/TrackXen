@@ -148,7 +148,7 @@ class App:
                 self.log.event("camera", f"camera id {cam.id} is used by more than one camera: only the last one "
                                          "is used", level="error", source=cam.id)
                 self._link_retry.pop(cam.id, None)
-                await old.link.close()
+                await self._close_links([old])
             link = CameraLink(cam.id, CameraLinkConfig(
                 host=cam.host, visca_port=cam.visca_port, freed_port=cam.freed_port, transport=cam.visca_transport,
                 units_per_degree=cam.units_per_degree, tilt_units_per_degree=cam.tilt_units_per_degree,
@@ -422,6 +422,7 @@ class App:
         """A camera's control step failed: stop that camera rather than leave it moving, and log why."""
         try:
             s.link.request(0, 0, 0)
+            s.halt()  # (a joystick move under way is over too)
         except Exception:  # noqa: BLE001 - nothing more to do for it here
             pass
         self._loop_error("camera control", error, s.cfg.id)
@@ -483,6 +484,11 @@ class App:
     async def _close_links(self, sessions: list[CameraSession]) -> None:
         """Close these cameras' connections, each stopping its camera first, all at once: one that doesn't
         answer doesn't keep the others moving meanwhile."""
+        for s in sessions:  # (they are still ticked meanwhile: a joystick move under way must not go on)
+            try:
+                s.halt()
+            except Exception as e:  # noqa: BLE001 - closing stops it all the same
+                self._log_error("camera", f"stopping before closing failed: {e!r}", s.cfg.id)
         results = await asyncio.gather(*(s.link.close() for s in sessions), return_exceptions=True)
         for s, result in zip(sessions, results):
             if isinstance(result, BaseException):
@@ -642,6 +648,7 @@ class App:
             s.move, s.cue, s.audio_follow = None, None, False
             try:
                 s.set_tracking(False, "STOP ALL")
+                s.halt()  # a joystick move too, at once (not ramped down)
             except Exception as e:  # noqa: BLE001 - it is stopped below all the same
                 self._log_error("operator", f"STOP ALL: {e!r}", s.cfg.id)
         self.inputs.follow.waiting.clear()  # mics waiting for a free camera
