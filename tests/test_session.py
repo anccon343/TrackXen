@@ -567,3 +567,20 @@ def test_the_control_step_uses_the_camera_position_moved_on_to_now():
     still = new_session()[0]
     p = still.link.pose_now()
     assert still._pose_for_control(p.t + 0.05, p).pan == p.pan
+
+
+def test_pan_tilt_smoothness_reaches_the_controller_and_composes_with_on_air():
+    s, _ = new_session(smoothness=10)
+    m = s.controller.motion
+    assert (m.ff_tau, m.step_hysteresis, m.jerk_time, m.max_accel) == pytest.approx((0.4, 0.35, 0.3, 45.0 * 0.75))
+    assert m.gain == pytest.approx(1.6) and m.max_pan == 30.0  # sensitivity and top speed are left alone
+    rev = s.settings_rev
+    s.update_slot({"smoothness": 1})
+    assert s.settings_rev > rev and (s.controller.motion.ff_tau, s.controller.motion.max_accel) == (0.0, 45.0)
+    s.update_slot({"smoothness": 10})
+    s.set_on_air(True)
+    for _ in range(60):
+        s.tick(time.monotonic())
+    m = s.controller.motion  # the on-air share multiplies on top of the slot's
+    assert m.max_accel == pytest.approx(45.0 * 0.75 * 0.35) and m.jerk_time == pytest.approx(0.3)
+    assert m.max_pan == 15.0 and m.ff_tau == pytest.approx(0.4)

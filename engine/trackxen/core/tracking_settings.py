@@ -6,12 +6,13 @@ while the camera moves. Ranges follow Canon's (docs/reference.md section 3).
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from trackxen.control.controller import Framing
+from trackxen.control.controller import Framing, Motion
 from trackxen.control.lens import Lens
 
 SLOTS = 5
@@ -151,6 +152,8 @@ class AppSettings(FiniteModel):
     composition: Framing = Field(default_factory=Framing)
     halting_area: bool = True  # Pan/Tilt Halting Area on (its size is composition.dead_zone_x/y)
     sensitivity: int = Field(7, ge=1, le=10)  # Canon "Tracking Sensitivity": higher is nimbler
+    # Beyond Canon: higher is softer starts, stops and speed changes (tracking and joystick); 1 is the liveliest
+    smoothness: int = Field(5, ge=1, le=10)
     # Steps 6 and 7
     exclusion_areas: list[Area] = Field(default_factory=_areas)
     halting_areas: list[Area] = Field(default_factory=_areas)  # tracking halting areas
@@ -253,3 +256,40 @@ class PresetLink(FiniteModel):
 def sensitivity_gain(sensitivity: int) -> float:
     """Canon's Tracking Sensitivity 1..10 as the controller's correction gain (7 -> 1.6)."""
     return 0.4 + 0.2 * (sensitivity - 1)
+
+
+# Pan/Tilt Smoothness, measured with a closed-loop harness (the real session, controller, link and VISCA code against
+# a fake P400 and G2 with detector noise, head bob and sway; a person 15 m away walking, stopping and standing):
+# - 1 (liveliest) is the motion as it was: the raw Kalman speed for feed-forward, the nearest speed step, a constant
+#   acceleration of the profile's max_accel, and joystick moves sent as they are;
+# - 5 (the default) is the camera's motion profile as it stands (Motion's defaults: feed-forward low-pass 0.15 s, step
+#   hysteresis 0.25): no stop-starts while a person walks, framing as good or better than before except a little
+#   overshoot when a person stops; and a 0.22 s joystick ramp;
+# - 10 (softest) low-passes the person's speed over 0.4 s, holds speed steps longer (hysteresis 0.35), builds the
+#   acceleration up over 0.3 s (an S-curve) to 0.75 of max_accel, and ramps the joystick over 0.5 s. That still keeps a
+#   1.2 m/s walker 15 m away in the picture at an 8-degree view (and 5), on air too; zoom-scaled acceleration did not:
+#   with the on-air acceleration share it lost the walker at 5 degrees, and it smoothed nothing measurable.
+SMOOTHNESS_DEFAULT = 5
+SMOOTHNESS_SOFTEST = {"ff_tau": 0.4 / 0.15, "step_hysteresis": 0.35 / 0.25, "max_accel": 0.75}  # factors at 10
+SMOOTHNESS_JERK_TIME = 0.3  # s of S-curve added at 10
+MANUAL_RAMP_MAX = 0.5  # s: the longest a joystick speed change takes (at 10), stopping included
+
+
+def smoothness_motion(motion: Motion, smoothness: int) -> Motion:
+    """The motion profile at Pan/Tilt Smoothness 1..10, as factors on the camera's own profile (the on-air profile
+    multiplies on top of it). Below the default the feed-forward low-pass and the step hysteresis shrink to nothing;
+    above it they grow, the acceleration drops and an S-curve is added."""
+    if smoothness <= SMOOTHNESS_DEFAULT:
+        u = (smoothness - 1) / (SMOOTHNESS_DEFAULT - 1)  # 0 at 1, 1 at the default
+        return dataclasses.replace(motion, ff_tau=motion.ff_tau * u, step_hysteresis=motion.step_hysteresis * u)
+    u = (smoothness - SMOOTHNESS_DEFAULT) / (10 - SMOOTHNESS_DEFAULT)  # 0 at the default, 1 at 10
+    f = {name: 1.0 + (top - 1.0) * u for name, top in SMOOTHNESS_SOFTEST.items()}
+    return dataclasses.replace(motion, ff_tau=motion.ff_tau * f["ff_tau"],
+                               step_hysteresis=motion.step_hysteresis * f["step_hysteresis"],
+                               max_accel=motion.max_accel * f["max_accel"],
+                               jerk_time=motion.jerk_time + SMOOTHNESS_JERK_TIME * u)
+
+
+def manual_ramp(smoothness: int) -> float:
+    """Pan/Tilt Smoothness 1..10 as the time a joystick speed change takes, at most (1: none, as before)."""
+    return MANUAL_RAMP_MAX * (smoothness - 1) / 9

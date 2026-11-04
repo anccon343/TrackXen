@@ -46,7 +46,9 @@ def test_slots_are_always_five():
                                   {"lens": {"hfov_wide": 3.0, "hfov_tele": 60.0}}, {"pan_speeds": []},
                                   {"tilt_speeds": [1.0, -2.0]}, {"units_per_degree": 0},
                                   {"tilt_units_per_degree": 0}, {"video_delay": float("nan")},
-                                  {"motion": {"max_pan": float("inf")}}])
+                                  {"motion": {"max_pan": float("inf")}}, {"motion": {"ff_tau": -0.1}},
+                                  {"motion": {"ff_tau": 5.0}}, {"motion": {"jerk_time": 3.0}},
+                                  {"motion": {"step_hysteresis": 0.8}}, {"motion": {"step_hysteresis": float("nan")}}])
 def test_camera_calibration_values_that_would_crash_are_refused(data):
     refused(CameraConfig, data)
 
@@ -103,3 +105,30 @@ def test_values_no_longer_accepted_go_back_to_their_defaults_when_loading(tmp_pa
     assert cfg.vmix.host == "10.0.0.9" and cfg.vmix.port == 8099 and cfg.web_port == 8095
     assert not list(tmp_path.glob("settings.json.broken-*"))
     assert len(cfg.load_notes) == 6 and "'cam1'" in cfg.load_notes[-2] and "vmix.port" in capsys.readouterr().err
+
+
+def test_settings_from_before_pan_tilt_smoothness_load_with_its_defaults(tmp_path):
+    """A settings.json (or show file) saved before the smoothness fields existed: the defaults, nothing noted. A
+    hand-edited value out of range goes back to its own default, the rest of the motion profile is kept."""
+    path = tmp_path / "settings.json"
+    data = AppConfig(cameras=[CameraConfig(id="cam1")]).model_dump()
+    cam = data["cameras"][0]
+    for slot in cam["slots"]:
+        del slot["smoothness"]
+    for key in ("ff_tau", "jerk_time", "step_hysteresis"):
+        del cam["motion"][key]
+    cam["motion"]["max_accel"] = 30.0
+    path.write_text(json.dumps(data), encoding="utf-8")
+    cfg = AppConfig.load(path)
+    assert [s.smoothness for s in cfg.cameras[0].slots] == [5] * SLOTS and not cfg.load_notes
+    assert cfg.cameras[0].motion.ff_tau == 0.15 and cfg.cameras[0].motion.max_accel == 30.0
+    assert AppConfig.from_show(json.loads(path.read_text()), []).cameras[0].slots[0].smoothness == 5
+    cam["motion"]["step_hysteresis"] = 3.0
+    path.write_text(json.dumps(data), encoding="utf-8")
+    cfg = AppConfig.load(path)
+    assert cfg.cameras[0].motion.step_hysteresis == 0.25 and cfg.cameras[0].motion.max_accel == 30.0
+    assert len(cfg.load_notes) == 1 and "step_hysteresis" in cfg.load_notes[0]
+    cam["motion"]["step_hysteresis"] = 0.25
+    cam["slots"][1]["smoothness"] = 11
+    with pytest.raises(ValueError):  # a show file is checked like the settings page
+        AppConfig.from_show(data, [])

@@ -26,6 +26,9 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Annotated
+
+from annotated_types import Interval
 
 from trackxen.control.camera import Pose
 from trackxen.control.kalman import AngleKalman
@@ -96,10 +99,14 @@ class Motion:
     settle_ratio: float = 0.3  # keep moving until the error is below dead zone x this
     lookahead: float = 0.12  # seconds to predict ahead
     max_zoom_step: int = 3  # 1..8 (VISCA zoom speeds 0..7)
-    # Smoothness:
-    ff_tau: float = 0.15  # s: low-pass on the person's speed used for feed-forward (0 = the raw Kalman speed)
-    jerk_time: float = 0.0  # s to build up to the full acceleration: an S-curve (0 = constant acceleration)
-    step_hysteresis: float = 0.25  # share of the gap between speed steps a change must pass (0 = nearest step)
+    # Smoothness (each App Settings slot's Pan/Tilt Smoothness scales these: tracking_settings.smoothness_motion).
+    # The ranges are checked where a profile is read from the settings (CameraConfig.motion).
+    # s: low-pass on the person's speed used for feed-forward (0 = the raw Kalman speed)
+    ff_tau: Annotated[float, Interval(ge=0.0, le=2.0)] = 0.15
+    # s to build up to the full acceleration: an S-curve (0 = constant acceleration)
+    jerk_time: Annotated[float, Interval(ge=0.0, le=2.0)] = 0.0
+    # share of the gap between neighbouring speed steps a change must pass (0 = the nearest step)
+    step_hysteresis: Annotated[float, Interval(ge=0.0, le=0.5)] = 0.25
 
 
 @dataclass

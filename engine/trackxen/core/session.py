@@ -27,7 +27,7 @@ from trackxen.control.kalman import AngleKalman
 from trackxen.control.lens import Lens
 from trackxen.core.config import CameraConfig
 from trackxen.core.tracking_settings import (SLOTS, AppSettings, Area, PresetLink, View, default_slots, merge,
-                                             sensitivity_gain, view_area)
+                                             sensitivity_gain, smoothness_motion, view_area)
 from trackxen.rules import areas as rules
 from trackxen.rules.framing import Framer, Shot
 from trackxen.rules.geometry import area_from_view, area_to_view, view_edges, view_to_room
@@ -152,7 +152,8 @@ class CameraSession:
         if not slot.halting_area:  # Pan/Tilt Halting Area off: movement follows the sensitivity alone
             framing = dataclasses.replace(framing, dead_zone_x=0.01, dead_zone_y=0.01)
         self._framing = framing
-        self._motion = dataclasses.replace(self.cfg.motion, gain=sensitivity_gain(slot.sensitivity))
+        self._motion = smoothness_motion(dataclasses.replace(self.cfg.motion, gain=sensitivity_gain(slot.sensitivity)),
+                                         slot.smoothness)
         self._apply_air()
         self.controller.fix_tilt = slot.fix_tilt
         self.controller.max_zoom = rules.max_zoom_for_priority(slot, self.lens)
