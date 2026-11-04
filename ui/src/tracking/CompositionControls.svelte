@@ -46,7 +46,7 @@
 <span class="label">Pan/Tilt Smoothness</span>
 <NumberSlider value={slot.smoothness} min={1} max={10} step={1} minLabel="lively" maxLabel="smooth"
               onchange={(v) => slots.patch({ smoothness: v })} />
-{#if help}<p class="help">Higher starts, stops and changes speed more softly, also for the PTZ buttons and Companion. 1 is the liveliest. High values lag a little more when the target stops and starts.</p>{/if}
+{#if help}<p class="help">Higher starts, stops and changes speed more softly, also for this app's arrow buttons. 1 is the liveliest. High values follow sudden moves later, mostly in tight shots.</p>{/if}
 
 <style>
   .row { display: flex; justify-content: space-between; align-items: center; min-height: 34px; gap: 8px; }
