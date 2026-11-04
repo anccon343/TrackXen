@@ -298,6 +298,8 @@ class CameraSession:
                 self.move.then_track = False
             self.cue = None
         if on == self.tracking:
+            if not on:
+                self.halt()  # (already off: a joystick move still slowing down stops at once, too)
             return
         self.tracking = on
         self.controller.reset()
@@ -356,10 +358,14 @@ class CameraSession:
         at most manual_ramp() s (0.5 s at 10; at 1 they are sent as they are).
         """
         now = time.monotonic()
+        drive = (0, 0) if self._manual_active else self.last_command[:2]  # tracking's drive this press takes over
         if pan or tilt or zoom:
             self.manual_at, self.cue = now, None
         if (pan or tilt or zoom) and self.tracking and not self.slot.restart_after_manual:
             self._manual_operation("moved with the joystick")
+        keep = tuple(d if d * w > 0 else 0 for d, w in zip(drive, (pan, tilt)))  # (the same direction on an axis)
+        if keep != (0, 0):  # ramp on from the speed under way, not from a stop
+            self.shaper.take_over(*keep)
         self.move = None
         self.manual_until = now + hold
         self._manual_active = True

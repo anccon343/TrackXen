@@ -14,6 +14,7 @@ speed steps on the way.
 - A reversal goes through a stop (one control tick at step 0), not straight from one direction to the other.
 - Zoom is passed as it is (it has no speed table here; the lens has its own ramp).
 - reset() forgets the motion at once: safety stops (STOP ALL, the watchdog, tracking off) are never ramped.
+- take_over() starts from a drive already under way (a press in the direction tracking is panning), not from rest.
 """
 
 from __future__ import annotations
@@ -49,6 +50,13 @@ class ManualShaper:
         """Stopped by something else (a safety stop): no motion, no change under way."""
         self.goal, self._from, self._to, self._length, self._pass = (0, 0), [0.0, 0.0], [0.0, 0.0], 0.0, True
         self._sent = (0, 0)
+
+    def take_over(self, pan: int, tilt: int) -> None:
+        """The camera is already driving at these speed steps (tracking): the next change starts from them."""
+        self.reset()
+        self.goal = self._sent = (pan, tilt)
+        self._from = [SpeedTable.speed_of(self.speeds.pan, pan), SpeedTable.speed_of(self.speeds.tilt, tilt)]
+        self._to, self._pass = list(self._from), False
 
     def speed(self, now: float) -> list[float]:
         """The shaped speeds (deg/s) at `now`."""

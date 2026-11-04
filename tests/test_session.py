@@ -665,12 +665,14 @@ def test_pan_tilt_smoothness_1_sends_joystick_speeds_as_they_are():
     assert s.link.requests[-1] == (0, 0, 0)
 
 
-@pytest.mark.parametrize("stop", ["halt", "watchdog", "tracking off", "preset", "click centering"])
+@pytest.mark.parametrize("stop", ["halt", "watchdog", "tracking off", "tracking already off", "preset",
+                                  "click centering"])
 def test_safety_stops_and_absolute_moves_end_a_joystick_move_at_once(clock, stop):
     """STOP ALL (session.halt), the watchdog, tracking off: the camera stops at once, never ramped down, and
-    stays stopped (nothing ramps on afterwards). An absolute move takes over at once (a drive command would
+    stays stopped (nothing ramps on afterwards). Tracking off also when the press itself already switched it off
+    (Restart Tracking After Manual Operation off). An absolute move takes over at once (a drive command would
     cancel it)."""
-    s, _ = new_session(smoothness=10, restart_after_manual=True)
+    s, _ = new_session(smoothness=10, restart_after_manual=stop != "tracking already off")
     s.on_tracks(message([track(1, 960)]))
     s.select_id(1)
     s.set_tracking(True)
@@ -678,7 +680,29 @@ def test_safety_stops_and_absolute_moves_end_a_joystick_move_at_once(clock, stop
     s.manual(0, 0, 0)
     joystick(s, clock, None, 0.1)  # slowing down
     assert s.link.requests[-1][0] > 5
+    assert s.tracking is (stop != "tracking already off")
     {"halt": s.halt, "watchdog": s.video_stopped, "tracking off": lambda: s.set_tracking(False),
-     "preset": lambda: s.recall_preset(3), "click centering": lambda: s.click_center(0.6, 0.5)}[stop]()
+     "tracking already off": lambda: s.set_tracking(False), "preset": lambda: s.recall_preset(3),
+     "click centering": lambda: s.click_center(0.6, 0.5)}[stop]()
     assert s.link.requests[-1] == (0, 0, 0)
     assert all(r == (0, 0, 0) for _, r in joystick(s, clock, None, 0.6))
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_a_joystick_press_while_tracking_pans_ramps_on_from_the_speed_under_way(clock, restart):
+    """Tracking drives the camera right and the operator presses right: the joystick ramp starts from the speed
+    under way, not from a stop (a stop and a new start is a jolt). Tracking off (Restart off) still sends its stop
+    first, but the link only sends the newest wish (CameraLink.request), so the camera never gets it."""
+    s, _ = new_session(restart_after_manual=restart)
+    s.on_tracks(message([track(7, 1700)]))
+    s.select_id(7)
+    s.set_tracking(True)
+    for _ in range(25):  # half a second of panning right
+        s.on_tracks(message([track(7, 1700)]))
+        s.tick(clock.t)
+        clock.t += 0.02
+    drive = s.link.requests[-1][0]
+    assert 6 <= drive <= 14
+    pans = [r[0] for _, r in joystick(s, clock, drive + 4, 0.4)]
+    assert pans[0] >= drive and all(a <= b for a, b in zip(pans, pans[1:])) and pans[-1] == drive + 4, pans
+    assert s.tracking is restart
