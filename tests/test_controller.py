@@ -416,3 +416,73 @@ def test_s_curve_builds_the_acceleration_up():
     assert s_steps[0] < 0.2 * steps[0] and all(a < b + 1e-9 for a, b in zip(s_steps[:8], s_steps[1:9]))
     assert max(s_steps) <= 45.0 * 0.02 + 1e-9
     assert all(b - a <= 45.0 / 0.2 * 0.02 ** 2 + 1e-9 for a, b in zip(s_steps[1:8], s_steps[2:9]))
+
+
+def test_display_size_and_auto_zoom_keep_zooming_while_the_person_walks():
+    """Following a walker inside the dead zone does not block the zoom (only a camera catching up does): Display Size
+    and Auto Zoom on, the person 0.8 of the picture tall (wanted 0.55), walking 2 deg/s. The zoom used to wait until
+    the walk was over, so a person walking towards the camera grew out of the picture."""
+    lens = Lens()
+    person_deg = 0.8 * lens.vfov(lens.zoom_for_hfov(30.0))
+    _, commands, zooms, _ = simulate(lambda t: (min(t, 9.0) * 2.0, -1.0), seconds=9.0, start_zoom_hfov=30.0,
+                                     framing=Framing(display_size=True, auto_zoom=True), person_deg=person_deg)
+    out = [c[0] for c in commands if c[3] < 0]
+    assert out and out[0] < 3.0, out[:1]  # zooms out while the person walks...
+    assert sum(1 for c in commands if 3.0 < c[0] < 9.0 and c[1] > 0) / sum(1 for c in commands if 3.0 < c[0] < 9.0) > 0.9
+    assert person_deg / lens.vfov(zooms[-1]) == pytest.approx(0.55, rel=0.15)  # ...to the display size
+
+
+def test_after_a_pause_the_first_commands_do_not_drive_away_from_the_person():
+    """hold() (tracking paused, a joystick move, a fixed viewing angle area: no commands meanwhile) also forgets the
+    low-passed person speed: the person walked right at 4 deg/s, then stood for 2 s while the camera was moved 1
+    degree to their right. The first commands go back towards them, not on with the old walk."""
+    ctrl = Controller()
+    zoom = ctrl.lens.zoom_for_hfov(8.0)
+    off_tilt = ctrl.lens.pixel_to_angles(0.5 * W, 0.3 * H, W, H, zoom)[1]
+    cam, after = 0.0, []
+    for i in range(450):
+        t = i * 0.02
+        person = 4.0 * min(t, 5.0)
+        if i % 2 == 0:
+            x, y = ctrl.lens.angles_to_pixel(person - cam, off_tilt, W, H, zoom)
+            ctrl.observe(Observation(t, x, y, 0.5 * H, W, H), Pose(t, cam, 0.0, zoom))
+        if 5.0 <= t < 7.0:  # paused: no commands; the camera ends up 1 degree right of the person
+            cam = person + 1.0
+            continue
+        if t >= 7.0 and not after:
+            ctrl.hold()  # tracking again
+        cmd = ctrl.command(t, Pose(t, cam, 0.0, zoom))
+        if t >= 7.0:
+            after.append(cmd.pan)
+        cam += SpeedTable.speed_of(ctrl.speeds.pan, cmd.pan) * 0.02
+    assert all(p <= 0 for p in after), after[:10]
+    assert min(after) < 0
+
+
+@pytest.mark.parametrize("ptz", [False, True])
+def test_a_camera_that_coasted_past_a_limit_comes_back_inside_it(ptz):
+    """Shooting range: a person walking past the limit, camera and video delays. The camera follows them up to the
+    limit and coasts a little past it; the overrun is inside the dead zone, but the picture must not rest out there
+    for as long as the person is beyond the limit (the shooting range always wins)."""
+    def limit(pan, tilt, hfov, vfov):
+        return min(pan, 5.0), tilt
+
+    lens, speeds = ptz_lens_speeds() if ptz else (None, None)
+    _, commands, _, (pan, _) = simulate(lambda t: (min(t, 8.0) * 1.0, -0.27), seconds=14, start_zoom_hfov=24.0,
+                                        command_delay=0.08, video_delay=0.15, lens=lens, speeds=speeds,
+                                        setup=lambda c: setattr(c, "constrain", limit))
+    assert 4.5 < pan <= 5.0 + 0.02, pan
+    assert all(c[1] == 0 for c in commands[-100:])  # at rest inside, no hunting
+
+
+def test_a_camera_that_eased_to_a_stop_just_past_a_walker_who_stopped_does_not_turn_back():
+    """Following a walker with feed-forward, the camera eases to a stop a little past them when they stop (the video
+    and command delays). Inside the dead zone it stays there: turning back at every stop (10-11 reversals a minute in
+    a wide stop-and-go, measured) is the jerk the Halting Area is there to avoid. Past the dead zone it does come
+    back (tight shots)."""
+    lens = Lens()
+    off_tilt = lens.pixel_to_angles(0.5 * W, 0.3 * H, W, H, lens.zoom_for_hfov(50.0))[1]
+    errors, commands, _, _ = simulate(lambda t: (min(max(t - 1.0, 0.0), 4.0) * 4.6, off_tilt), seconds=9.0,
+                                      start_zoom_hfov=50.0)
+    assert any(c[1] > 0 for c in commands) and all(c[1] >= 0 for c in commands)  # never back against the walk
+    assert abs(errors[-1][1]) < Framing().dead_zone_x * W and all(c[1] == 0 for c in commands[-100:])

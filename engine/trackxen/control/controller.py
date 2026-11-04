@@ -7,15 +7,17 @@ Per update:
 3. The camera should point so the head sits at the framing point (Canon's Display Position).
 4. Inside the dead zone (Canon's Pan/Tilt Halting Area) the camera stays still; once it
    moves, it keeps going until the error is small again and the person has (nearly) stopped:
-   a walking person is followed in one movement, not in stop-start pulses. The dead zone is
-   never smaller than what the camera can hold (a walking head bobs; the slowest speed step
-   coasts during the video and command delays).
+   a walking person is followed in one movement, not in stop-start pulses. A move doesn't turn
+   back inside the dead zone (a walker who stops is passed a little: it ends there). The dead
+   zone is never smaller than what the camera can hold (a walking head bobs; the slowest speed
+   step coasts during the video and command delays).
 5. Speed = the person's own speed (feed-forward, low-passed: the Kalman speed is noisy) +
    gain x error, limited by the motion profile's top speed (but never below what keeps up
    with the person) and acceleration (optionally an S-curve), then mapped to the camera's
    real speed steps, with hysteresis between neighbouring steps. Ahead of a walking person
    (after catching up) the camera waits for them rather than turning back.
-6. Auto zoom keeps the person at the wanted size (Canon's Display Size).
+6. Auto zoom keeps the person at the wanted size (Canon's Display Size), also while a walker is
+   followed; not while the camera catches up.
 
 The session can also limit where the camera may aim (`constrain`: shooting range, priority
 display area), how far it may zoom in (`max_zoom`) and whether it may tilt (`fix_tilt`).
@@ -151,6 +153,7 @@ class Controller:
         self._velocity = [0.0, 0.0]
         self._accel = [0.0, 0.0]  # deg/s^2 (S-curve)
         self._step = [0, 0]  # the speed steps last commanded (step hysteresis)
+        self._dir = [0, 0]  # the way this move has turned the camera (it doesn't turn back inside the dead zone)
         self._target_speed = [0.0, 0.0]  # the person's speed, low-passed (feed-forward)
         self._last_t: float | None = None
         self._sizing = True  # zooming to the display size once after a target is locked
@@ -169,6 +172,8 @@ class Controller:
         self._velocity = [0.0, 0.0]
         self._accel = [0.0, 0.0]
         self._step = [0, 0]
+        self._dir = [0, 0]
+        self._target_speed = [0.0, 0.0]  # (filter state: a speed from before the pause would drive the wrong way)
         self._last_t = None
 
     def observe(self, obs: Observation, pose: Pose) -> tuple[float, float]:
@@ -202,6 +207,8 @@ class Controller:
         held = [abs(allowed[i] - aim[i]) > 0.01 for i in (0, 1)]  # pinned at a limit: no feed-forward
         error = [allowed[0] - pose.pan, allowed[1] - pose.tilt]
         error[0] = (error[0] + 180) % 360 - 180
+        # pinned at a limit and coasted past it (the person is beyond it): come back inside, don't rest out there
+        past = [held[i] and error[i] * (aim[i] - allowed[i]) < 0 and abs(error[i]) > 0.02 for i in (0, 1)]
         tables = (self.speeds.pan, self.speeds.tilt)
         dead = [max(f.dead_zone_x * hfov, MIN_DEAD_ZONE, tables[0][0] * SLOWEST_STEP_COAST),
                 max(f.dead_zone_y * vfov, MIN_DEAD_ZONE, tables[1][0] * SLOWEST_STEP_COAST)]
@@ -209,6 +216,7 @@ class Controller:
         top = (m.max_pan, m.max_tilt)  # ...but never too slow to keep up with the person
         limits = [min(top[i], max(top[i] * zoom_scale, KEEP_UP * abs(target_speed[i]))) for i in (0, 1)]
         steps = [0, 0]
+        following = [False, False]  # moving only to follow a walker inside the dead zone (doesn't block the zoom)
         for axis, table in enumerate(tables):
             if axis == 1 and self.fix_tilt:
                 self._moving[1], self._velocity[1], self._accel[1], self._step[1] = False, 0.0, 0.0, 0
@@ -216,9 +224,10 @@ class Controller:
             err = error[axis]
             slow = max(SETTLE_SPEED * dead[axis], SETTLE_SPEED_MIN)
             walking = abs(target_speed[axis]) > slow
-            if not self._moving[axis] and abs(err) > dead[axis]:
-                self._moving[axis] = True
-            elif self._moving[axis] and abs(err) < dead[axis] * m.settle_ratio and not walking:
+            following[axis] = walking and abs(err) <= dead[axis]
+            if not self._moving[axis] and (abs(err) > dead[axis] or past[axis]):
+                self._moving[axis], self._dir[axis] = True, 0
+            elif self._moving[axis] and abs(err) < dead[axis] * m.settle_ratio and not walking and not past[axis]:
                 self._moving[axis] = False
             feedforward = 0.0 if held[axis] else m.feedforward * target_speed[axis]
             wanted = feedforward + m.gain * err if self._moving[axis] else 0.0
@@ -228,21 +237,28 @@ class Controller:
                      and (vp, vt)[axis] * target_speed[axis] > slow * abs(target_speed[axis]))
             if ahead and wanted * target_speed[axis] < 0:
                 wanted = 0.0
+            if self._moving[axis] and wanted * self._dir[axis] < 0 and abs(err) <= dead[axis] and not past[axis]:
+                # eased to a stop a little past the person (a walker who stopped; the delays): the move ends there, it
+                # doesn't turn back inside the dead zone (a reversal at every stop is a jerk); past it, it does
+                self._moving[axis], wanted = False, 0.0
             wanted = max(-limits[axis], min(limits[axis], wanted))
             wanted = self._velocity[axis] = self._ramp(axis, wanted, m.max_accel, dt)
+            if wanted:
+                self._dir[axis] = 1 if wanted > 0 else -1
             step = SpeedTable.step_for(table, wanted)
             if self._moving[axis] and step == 0:  # slower than the camera's slowest step
                 # Settle inside the dead zone (it would get no closer), and also within the distance the
                 # slowest step coasts during the video and command delays: closer than that, step 1 would
                 # overshoot a tiny dead zone (Halting Area off, tight shot) and hunt to and fro. Not while waiting
                 # for a walking person: the move goes on when they catch up, not a whole dead zone later.
-                if abs(err) <= max(dead[axis], table[0] * m.lookahead):
+                if abs(err) <= max(dead[axis], table[0] * m.lookahead) and not past[axis]:
                     self._moving[axis] = ahead
                 else:  # outside it: the slowest step, or the camera would never get there
                     step = 1 if (wanted if wanted else err) > 0 else -1
             steps[axis] = self._step[axis] = _hysteresis(table, self._step[axis], step, wanted, m.step_hysteresis)
 
-        zoom = self._zoom(obs, pose, tt, vfov)
+        # an axis catching up blocks the zoom; one following a walker inside the dead zone doesn't
+        zoom = self._zoom(obs, pose, tt, vfov, any(self._moving[i] and not following[i] for i in (0, 1)))
         return Command(steps[0], steps[1], zoom, debug={
             "state": "moving" if any(self._moving) else "holding", "error": [round(e, 3) for e in error],
             "dead_zone": [round(d, 3) for d in dead], "velocity": [round(v, 3) for v in self._velocity],
@@ -265,7 +281,7 @@ class Controller:
         self._accel[axis] = a1
         return v1
 
-    def _zoom(self, obs: Observation, pose: Pose, head_tilt: float, vfov: float) -> int:
+    def _zoom(self, obs: Observation, pose: Pose, head_tilt: float, vfov: float, catching_up: bool = False) -> int:
         """Signed zoom speed step towards the wanted size: the display size, or what Auto Framing asks."""
         f, m = self.framing, self.motion
         if obs.want_hfov:  # ratio > 1: zoom in
@@ -282,7 +298,7 @@ class Controller:
             self._sizing = False  # reached once; only Auto Zoom keeps adjusting
             return 0
         top = m.max_zoom_step if obs.zoom_step is None else min(obs.zoom_step, m.max_zoom_step)
-        if any(self._moving) or top <= 0:  # (0: no zooming, e.g. while on air)
+        if catching_up or top <= 0:  # (0: no zooming, e.g. while on air)
             return 0
         if obs.cut_bottom and not obs.want_hfov and ratio > 1:
             # the picture's bottom edge cuts the person off: bigger than the box says, and zooming in only
