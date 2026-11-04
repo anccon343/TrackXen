@@ -550,3 +550,20 @@ def test_points_and_rectangles_must_be_finite():
         with pytest.raises(ValueError):
             s.set_area("priority", 0, [0.2, bad, 0.6, 0.8], True)
     assert s.target_id is None and not s.link.gotos and not s.slot.priority_area.enabled
+
+
+def test_the_control_step_uses_the_camera_position_moved_on_to_now():
+    """C4: without FreeD the newest position is a polled one, ~50 ms old when the command is worked out. It is moved
+    on with the camera's speed over the last 0.15 s (at most 0.1 s ahead); a camera at rest stays where it is."""
+    s, _ = new_session()
+    now = time.monotonic()
+    s.link.set_pose(0.0, 1.0, t=now - 0.25)
+    s.link.set_pose(1.0, 0.5, t=now - 0.05)  # pans 5 deg/s, tilts -2.5 deg/s
+    s.link.pose_now = lambda: Pose(now - 0.05, 1.0, 0.5, ZOOM)
+    s.link.pose_at = lambda t: Pose(t, 1.0 + 5.0 * (t - now + 0.05), 0.5 - 2.5 * (t - now + 0.05), ZOOM)
+    pose = s._pose_for_control(now, s.link.pose_now())
+    assert (pose.t, pose.pan, pose.tilt, pose.zoom) == pytest.approx((now, 1.25, 0.375, ZOOM))
+    assert s._pose_for_control(now + 1.0, s.link.pose_now()).pan == pytest.approx(1.0 + 5.0 * 0.1)  # at most 0.1 s
+    still = new_session()[0]
+    p = still.link.pose_now()
+    assert still._pose_for_control(p.t + 0.05, p).pan == p.pan

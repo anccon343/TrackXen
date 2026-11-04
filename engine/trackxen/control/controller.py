@@ -6,10 +6,15 @@ Per update:
 2. Predict that direction `lookahead` seconds ahead (video and command delays).
 3. The camera should point so the head sits at the framing point (Canon's Display Position).
 4. Inside the dead zone (Canon's Pan/Tilt Halting Area) the camera stays still; once it
-   moves, it keeps going until the error is small again (no stop-start jitter), at least at
-   the camera's slowest speed step.
-5. Speed = the person's own speed (feed-forward) + gain x error, limited by the motion
-   profile's top speed and acceleration, then mapped to the camera's real speed steps.
+   moves, it keeps going until the error is small again and the person has (nearly) stopped:
+   a walking person is followed in one movement, not in stop-start pulses. The dead zone is
+   never smaller than what the camera can hold (a walking head bobs; the slowest speed step
+   coasts during the video and command delays).
+5. Speed = the person's own speed (feed-forward, low-passed: the Kalman speed is noisy) +
+   gain x error, limited by the motion profile's top speed (but never below what keeps up
+   with the person) and acceleration (optionally an S-curve), then mapped to the camera's
+   real speed steps, with hysteresis between neighbouring steps. Ahead of a walking person
+   (after catching up) the camera waits for them rather than turning back.
 6. Auto zoom keeps the person at the wanted size (Canon's Display Size).
 
 The session can also limit where the camera may aim (`constrain`: shooting range, priority
@@ -31,6 +36,21 @@ from trackxen.control.lens import Lens
 DEFAULT_PAN_SPEEDS = [0.4, 0.8, 1.3, 2.0, 2.9, 4.0, 5.4, 7.0, 9.0, 11.5, 14.4, 18.0,
                       22.0, 27.0, 33.0, 40.0, 48.0, 57.0, 67.0, 78.0, 90.0, 103.0, 117.0, 130.0]
 DEFAULT_TILT_SPEEDS = DEFAULT_PAN_SPEEDS[:23]
+
+# A move does not end while the person moves faster than SETTLE_SPEED x the dead zone per second, nor faster
+# than SETTLE_SPEED_MIN deg/s (above the Kalman's speed noise): otherwise the camera catches up, stops while
+# the person walks on, and starts again once the error has grown past the dead zone (17-57 stop-starts a
+# minute while walking, measured). A standing person still settles.
+SETTLE_SPEED = 0.15
+SETTLE_SPEED_MIN = 0.3
+# The dead zone is at least MIN_DEAD_ZONE degrees (a walking head bobs about +-0.08 degrees at 15 m), and at
+# least the distance the slowest speed step covers in SLOWEST_STEP_COAST s (it keeps going for the video and
+# command delays): smaller, and the camera hunts to and fro (Halting Area off, tight shots).
+MIN_DEAD_ZONE = 0.15
+SLOWEST_STEP_COAST = 0.27
+# The zoomed-in top speed is never below the person's own speed x KEEP_UP (up to the unzoomed top speed): a
+# brisk walker at a tight shot would otherwise walk out of the picture.
+KEEP_UP = 2.0
 
 
 @dataclass
@@ -76,6 +96,10 @@ class Motion:
     settle_ratio: float = 0.3  # keep moving until the error is below dead zone x this
     lookahead: float = 0.12  # seconds to predict ahead
     max_zoom_step: int = 3  # 1..8 (VISCA zoom speeds 0..7)
+    # Smoothness:
+    ff_tau: float = 0.15  # s: low-pass on the person's speed used for feed-forward (0 = the raw Kalman speed)
+    jerk_time: float = 0.0  # s to build up to the full acceleration: an S-curve (0 = constant acceleration)
+    step_hysteresis: float = 0.25  # share of the gap between speed steps a change must pass (0 = nearest step)
 
 
 @dataclass
@@ -118,6 +142,9 @@ class Controller:
         self.last_obs: Observation | None = None
         self._moving = [False, False]
         self._velocity = [0.0, 0.0]
+        self._accel = [0.0, 0.0]  # deg/s^2 (S-curve)
+        self._step = [0, 0]  # the speed steps last commanded (step hysteresis)
+        self._target_speed = [0.0, 0.0]  # the person's speed, low-passed (feed-forward)
         self._last_t: float | None = None
         self._sizing = True  # zooming to the display size once after a target is locked
 
@@ -126,12 +153,15 @@ class Controller:
         self.kalman.reset()
         self.last_obs = None
         self._sizing = True
+        self._target_speed = [0.0, 0.0]
         self.hold()
 
     def hold(self) -> None:
         """Forget the camera's motion (it was stopped or moved by something else), keep the person."""
         self._moving = [False, False]
         self._velocity = [0.0, 0.0]
+        self._accel = [0.0, 0.0]
+        self._step = [0, 0]
         self._last_t = None
 
     def observe(self, obs: Observation, pose: Pose) -> tuple[float, float]:
@@ -149,11 +179,13 @@ class Controller:
         obs = self.last_obs
         if not self.kalman.ready or obs is None or now - obs.t > hold_after:
             self._moving = [False, False]
-            self._velocity = [0.0, 0.0]
+            self._velocity, self._accel, self._step = [0.0, 0.0], [0.0, 0.0], [0, 0]
             return Command(debug={"state": "hold"})
 
         m, f = self.motion, self.framing
         tp, tt, vp, vt = self.kalman.predict(now + m.lookahead)
+        k = 1.0 if m.ff_tau <= 0 else min(1.0, dt / m.ff_tau)  # (no time passed: no change)
+        target_speed = self._target_speed = [s + (v - s) * k for s, v in zip(self._target_speed, (vp, vt))]
         ax, ay = obs.anchor or (f.anchor_x, f.anchor_y)
         off_pan, off_tilt = self.lens.pixel_to_angles(ax * obs.width, ay * obs.frame_height,
                                                       obs.width, obs.frame_height, pose.zoom)
@@ -163,41 +195,68 @@ class Controller:
         held = [abs(allowed[i] - aim[i]) > 0.01 for i in (0, 1)]  # pinned at a limit: no feed-forward
         error = [allowed[0] - pose.pan, allowed[1] - pose.tilt]
         error[0] = (error[0] + 180) % 360 - 180
-        dead = [f.dead_zone_x * hfov, f.dead_zone_y * vfov]
-        zoom_scale = min(1.0, max(0.08, hfov / 40.0))  # slower top speed when zoomed in
-        limits = [m.max_pan * zoom_scale, m.max_tilt * zoom_scale]
-        target_speed = [vp, vt]
+        tables = (self.speeds.pan, self.speeds.tilt)
+        dead = [max(f.dead_zone_x * hfov, MIN_DEAD_ZONE, tables[0][0] * SLOWEST_STEP_COAST),
+                max(f.dead_zone_y * vfov, MIN_DEAD_ZONE, tables[1][0] * SLOWEST_STEP_COAST)]
+        zoom_scale = min(1.0, max(0.08, hfov / 40.0))  # slower top speed when zoomed in...
+        top = (m.max_pan, m.max_tilt)  # ...but never too slow to keep up with the person
+        limits = [min(top[i], max(top[i] * zoom_scale, KEEP_UP * abs(target_speed[i]))) for i in (0, 1)]
         steps = [0, 0]
-        for axis, table in ((0, self.speeds.pan), (1, self.speeds.tilt)):
+        for axis, table in enumerate(tables):
             if axis == 1 and self.fix_tilt:
-                self._moving[1], self._velocity[1] = False, 0.0
+                self._moving[1], self._velocity[1], self._accel[1], self._step[1] = False, 0.0, 0.0, 0
                 continue
             err = error[axis]
+            slow = max(SETTLE_SPEED * dead[axis], SETTLE_SPEED_MIN)
+            walking = abs(target_speed[axis]) > slow
             if not self._moving[axis] and abs(err) > dead[axis]:
                 self._moving[axis] = True
-            elif self._moving[axis] and abs(err) < dead[axis] * m.settle_ratio:
+            elif self._moving[axis] and abs(err) < dead[axis] * m.settle_ratio and not walking:
                 self._moving[axis] = False
             feedforward = 0.0 if held[axis] else m.feedforward * target_speed[axis]
             wanted = feedforward + m.gain * err if self._moving[axis] else 0.0
+            # ahead of a walking person (caught up late and overshot): wait for them, don't turn back against the walk
+            # (still walking now, too: when the person stops, the low-passed speed takes a while to drop)
+            ahead = (walking and not held[axis] and err * target_speed[axis] < 0
+                     and (vp, vt)[axis] * target_speed[axis] > slow * abs(target_speed[axis]))
+            if ahead and wanted * target_speed[axis] < 0:
+                wanted = 0.0
             wanted = max(-limits[axis], min(limits[axis], wanted))
-            step = m.max_accel * dt  # acceleration limit: smooth starts and stops (no time passed: no change)
-            wanted = max(self._velocity[axis] - step, min(self._velocity[axis] + step, wanted))
-            self._velocity[axis] = wanted
-            steps[axis] = SpeedTable.step_for(table, wanted)
-            if self._moving[axis] and steps[axis] == 0:  # slower than the camera's slowest step
+            wanted = self._velocity[axis] = self._ramp(axis, wanted, m.max_accel, dt)
+            step = SpeedTable.step_for(table, wanted)
+            if self._moving[axis] and step == 0:  # slower than the camera's slowest step
                 # Settle inside the dead zone (it would get no closer), and also within the distance the
                 # slowest step coasts during the video and command delays: closer than that, step 1 would
-                # overshoot a tiny dead zone (Halting Area off, tight shot) and hunt to and fro.
+                # overshoot a tiny dead zone (Halting Area off, tight shot) and hunt to and fro. Not while waiting
+                # for a walking person: the move goes on when they catch up, not a whole dead zone later.
                 if abs(err) <= max(dead[axis], table[0] * m.lookahead):
-                    self._moving[axis] = False
+                    self._moving[axis] = ahead
                 else:  # outside it: the slowest step, or the camera would never get there
-                    steps[axis] = 1 if (wanted if wanted else err) > 0 else -1
+                    step = 1 if (wanted if wanted else err) > 0 else -1
+            steps[axis] = self._step[axis] = _hysteresis(table, self._step[axis], step, wanted, m.step_hysteresis)
 
         zoom = self._zoom(obs, pose, tt, vfov)
         return Command(steps[0], steps[1], zoom, debug={
             "state": "moving" if any(self._moving) else "holding", "error": [round(e, 3) for e in error],
             "dead_zone": [round(d, 3) for d in dead], "velocity": [round(v, 3) for v in self._velocity],
-            "target_speed": [round(vp, 3), round(vt, 3)], "limited": held})
+            "target_speed": [round(v, 3) for v in target_speed], "limited": held})
+
+    def _ramp(self, axis: int, wanted: float, accel: float, dt: float) -> float:
+        """The speed after `dt` on the way to `wanted`: at most `accel` deg/s^2, and with Motion.jerk_time the
+        acceleration itself builds up and eases off over that time (an S-curve). No time passed: no change."""
+        v0 = self._velocity[axis]
+        if self.motion.jerk_time <= 0:
+            return max(v0 - accel * dt, min(v0 + accel * dt, wanted))
+        jerk = accel / self.motion.jerk_time
+        a0, dv = self._accel[axis], wanted - v0
+        # brake early enough that the acceleration is back at 0 when the speed reaches the wish
+        goal = math.copysign(min(accel, math.sqrt(2 * jerk * abs(dv))), dv) if dv else 0.0
+        a1 = max(a0 - jerk * dt, min(a0 + jerk * dt, goal))
+        v1 = v0 + a1 * dt
+        if dt > 0 and (v1 - wanted) * (v0 - wanted) <= 0:  # reached (or passed) the wish
+            v1, a1 = wanted, 0.0
+        self._accel[axis] = a1
+        return v1
 
     def _zoom(self, obs: Observation, pose: Pose, head_tilt: float, vfov: float) -> int:
         """Signed zoom speed step towards the wanted size: the display size, or what Auto Framing asks."""
@@ -232,6 +291,21 @@ class Controller:
         if zoom > 0 and self.fix_tilt and abs(head_tilt - pose.tilt) > 0.35 * vfov:
             return 0  # (tilt fixed) zooming in would push the person out of the picture
         return zoom
+
+
+def _hysteresis(table: list[float], last: int, step: int, speed: float, share: float) -> int:
+    """Keep the last speed step until `speed` is past the middle between it and the neighbouring step by `share`
+    of the gap (on a log scale), so the camera doesn't flap between two steps. Stops and reversals are never held."""
+    if share <= 0 or step == 0 or last == 0 or (step > 0) != (last > 0) or step == last:
+        return step
+    i, speed = abs(last) - 1, abs(speed)
+    if abs(step) > abs(last) and i + 1 < len(table):
+        if speed < table[i] * (table[i + 1] / table[i]) ** (0.5 + share):
+            return last
+    elif abs(step) < abs(last) and 0 < i < len(table):
+        if speed > table[i] / (table[i] / table[i - 1]) ** (0.5 + share):
+            return last
+    return step
 
 
 def head_point(box: list[float], keypoints: list[list[float]], min_conf: float = 0.4) -> tuple[float, float]:

@@ -187,13 +187,15 @@ def run_still(ctrl: Controller, pose: Pose, tilt_error: float, ticks: int = 100,
 
 
 def test_a_correction_slower_than_step_1_still_moves_the_camera():
-    """N14: tilt error outside the dead zone (0.36 deg at 8 deg wide) but so small that gain x error is below
-    half of step 1: the camera must still be moved (slowest step), not left "moving" at step 0 forever."""
+    """N14: tilt error outside the dead zone (0.46 deg at 8 deg wide: what the G2's slowest step coasts) but so small
+    that gain x error is below half of step 1: the camera must still be moved (slowest step), not left "moving" at
+    step 0 forever."""
     ctrl, pose = ptz_controller(8.0)
-    cmds = run_still(ctrl, pose, 0.45)
+    cmds = run_still(ctrl, pose, 0.5)
+    assert cmds[0].debug["dead_zone"][1] < 0.5 and ctrl.motion.gain * 0.5 < ctrl.speeds.tilt[0] / 2
     assert cmds[-1].tilt == 1 and all(c.pan == 0 for c in cmds)
     ctrl, pose = ptz_controller(8.0)
-    assert run_still(ctrl, pose, -0.45)[-1].tilt == -1
+    assert run_still(ctrl, pose, -0.5)[-1].tilt == -1
 
 
 def test_a_small_error_inside_the_dead_zone_ends_the_movement_and_lets_it_zoom():
@@ -309,3 +311,108 @@ def test_session_tells_the_controller_when_the_box_is_cut_at_the_bottom():
             {"id": 1, "box": [900, 300, 1020, bottom], "score": 0.9, "keypoints": kp, "velocity": [0, 0],
              "missed": 0, "age": 5.0}]})
         assert s.controller.last_obs.cut_bottom is cut
+
+
+def test_a_camera_ahead_of_a_walking_person_waits_for_them_instead_of_ending_the_move():
+    """A soft start (on air, high Pan/Tilt Smoothness) catches up late and overshoots a walking person. The camera
+    must wait for them at step 0 and go on with the walk, not turn back, and not end the move inside the dead zone:
+    then it would only start again once the person was a whole dead zone away (seconds of standing still)."""
+    lens = Lens()
+    hfov = 50.0
+    off_tilt = lens.pixel_to_angles(0.5 * W, 0.3 * H, W, H, lens.zoom_for_hfov(hfov))[1]
+    m = Motion(max_pan=15.0, max_tilt=7.5, max_accel=45.0 * 0.75 * 0.35, ff_tau=0.4, step_hysteresis=0.35, jerk_time=0.3)
+    _, commands, _, _ = simulate(lambda t: (min(max(t - 1.0, 0.0), 14.0) * 1.9, off_tilt), seconds=16,
+                                 start_zoom_hfov=hfov, motion=m, framing=Framing(dead_zone_x=0.09, dead_zone_y=0.12),
+                                 video_delay=0.15, command_delay=0.08)
+    walk = [c for c in commands if 5.0 < c[0] < 15.0]  # after catching up
+    assert all(c[1] >= 0 for c in walk)  # never back against the walk
+    assert sum(1 for c in walk if c[1] == 0) / len(walk) < 0.1
+
+
+def test_speed_step_hysteresis_keeps_the_step_until_the_wish_is_clearly_past_the_middle():
+    """C2: no flapping between neighbouring steps (4.0 and 5.4 deg/s: the middle is 4.65 on a log scale)."""
+    from trackxen.control.controller import _hysteresis
+
+    table = SpeedTable().pan
+    assert SpeedTable.step_for(table, 4.8) == 7
+    assert _hysteresis(table, 6, 7, 4.8, 0.25) == 6  # past the middle, not by a quarter of the gap: kept
+    assert _hysteresis(table, 6, 7, 5.1, 0.25) == 7
+    assert _hysteresis(table, 7, 6, 4.5, 0.25) == 7 and _hysteresis(table, 7, 6, 4.2, 0.25) == 6
+    assert _hysteresis(table, 6, 7, 4.8, 0.0) == 7  # off: the nearest step
+    assert _hysteresis(table, 6, 0, 0.1, 0.25) == 0 and _hysteresis(table, 1, -1, -0.4, 0.25) == -1  # stops, reversals
+
+
+def feedforward_speeds(motion: Motion, ticks: int = 25) -> list[float]:
+    """A person walking 4 deg/s at 40 degrees (already seen for a second); the controller's feed-forward speed."""
+    ctrl = Controller(motion=motion)
+    zoom = ctrl.lens.zoom_for_hfov(40.0)
+    for i in range(30):
+        t = i / 30
+        x, y = ctrl.lens.angles_to_pixel(4.0 * t - 2.0, 0.0, W, H, zoom)
+        ctrl.observe(Observation(t, x, y, 400, W, H), Pose(t, 0.0, 0.0, zoom))
+    return [ctrl.command(1.0 + 0.02 * i, Pose(1.0 + 0.02 * i, 0.0, 0.0, zoom)).debug["target_speed"][0]
+            for i in range(ticks)]
+
+
+def test_feed_forward_follows_a_low_passed_person_speed():
+    """C3: the Kalman speed is noisy; feed-forward uses it low-passed over Motion.ff_tau (0: as it is)."""
+    raw = feedforward_speeds(Motion(ff_tau=0.0))
+    smooth = feedforward_speeds(Motion(ff_tau=0.15))
+    assert raw[0] == pytest.approx(4.0, abs=0.5)
+    assert smooth[0] == pytest.approx(raw[0] * 0.02 / 0.15, rel=0.01)  # one 20 ms step of a 0.15 s low-pass
+    assert all(a < b for a, b in zip(smooth[:10], smooth[1:11])) and smooth[-1] == pytest.approx(raw[-1], rel=0.05)
+
+
+def test_the_dead_zone_is_never_smaller_than_the_camera_can_hold():
+    """C5: Halting Area off (dead zone 0.01 of the picture) at a tight shot: at least 0.15 degrees (a walking head
+    bobs), and at least what the slowest step coasts in 0.27 s (PTZOptics: 1.7 deg/s, so 0.46 degrees)."""
+    tiny = Framing(dead_zone_x=0.01, dead_zone_y=0.01)
+    ctrl = Controller(framing=tiny)
+    pose = Pose(0.0, 0.0, 0.0, ctrl.lens.zoom_for_hfov(8.0))
+    ctrl.observe(Observation(0.0, W / 2, 0.3 * H, 400, W, H), pose)
+    assert ctrl.command(0.0, pose).debug["dead_zone"] == [0.15, 0.15]
+    ctrl, pose = ptz_controller(8.0, framing=tiny)
+    ctrl.observe(Observation(0.0, W / 2, 0.3 * H, 400, W, H), pose)
+    assert ctrl.command(0.0, pose).debug["dead_zone"] == pytest.approx([0.459, 0.459], abs=0.001)
+    wide = Controller()  # an ordinary dead zone is left as it is
+    pose = Pose(0.0, 0.0, 0.0, wide.lens.zoom_for_hfov(40.0))
+    wide.observe(Observation(0.0, W / 2, 0.3 * H, 400, W, H), pose)
+    assert wide.command(0.0, pose).debug["dead_zone"][0] == pytest.approx(0.06 * 40.0, abs=0.01)
+
+
+def test_a_tight_shot_keeps_up_with_a_brisk_walker_on_air():
+    """The zoomed-in top speed (on air: 15 deg/s x 8/40 = 3 deg/s) was below a 1.2 m/s walker 15 m away (4.6 deg/s):
+    the person walked out of the picture. The top speed is at least the person's speed x KEEP_UP now."""
+    lens = Lens()
+    off_tilt = lens.pixel_to_angles(0.5 * W, 0.3 * H, W, H, lens.zoom_for_hfov(8.0))[1]
+    errors, _, _, _ = simulate(lambda t: (min(max(t - 1.0, 0.0), 7.0) * 4.6, off_tilt), seconds=10, start_zoom_hfov=8.0,
+                               motion=Motion(max_pan=15.0, max_tilt=7.5, max_accel=45.0 * 0.35))
+    assert max(abs(ex) for t, ex, _ in errors) < 0.25 * W
+    assert abs(errors[-1][1]) < 0.06 * W  # and back on the mark once they stop
+
+
+def test_s_curve_builds_the_acceleration_up():
+    """Motion.jerk_time: the speed changes by at most max_accel x dt per tick, and the acceleration itself grows by at
+    most max_accel / jerk_time per second; no time passed: no change (K56); hold() starts from rest again."""
+    def first_speeds(jerk_time: float) -> list[float]:
+        ctrl = Controller(motion=Motion(jerk_time=jerk_time))
+        pose = Pose(0.0, 0.0, 0.0, ctrl.lens.zoom_for_hfov(40.0))
+        x, y = ctrl.lens.angles_to_pixel(10.0, 0.0, W, H, pose.zoom)
+        ctrl.observe(Observation(0.0, x, y, 400, W, H), pose)
+        speeds = []
+        for i in range(15):
+            ctrl.command(0.02 * i, pose)
+            speeds.append(ctrl._velocity[0])
+            if i == 7:
+                ctrl.command(0.02 * i, pose)  # the same moment again
+                assert ctrl._velocity[0] == pytest.approx(speeds[-1])
+        ctrl.hold()
+        assert ctrl._accel == [0.0, 0.0] and ctrl._velocity == [0.0, 0.0]
+        return speeds
+
+    steps = [b - a for a, b in zip([0.0] + first_speeds(0.0), first_speeds(0.0))]
+    assert steps[1] == pytest.approx(45.0 * 0.02)  # constant acceleration from the start
+    s_steps = [b - a for a, b in zip([0.0] + first_speeds(0.2), first_speeds(0.2))]
+    assert s_steps[0] < 0.2 * steps[0] and all(a < b + 1e-9 for a, b in zip(s_steps[:8], s_steps[1:9]))
+    assert max(s_steps) <= 45.0 * 0.02 + 1e-9
+    assert all(b - a <= 45.0 / 0.2 * 0.02 ** 2 + 1e-9 for a, b in zip(s_steps[1:8], s_steps[2:9]))

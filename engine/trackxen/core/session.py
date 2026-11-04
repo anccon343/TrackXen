@@ -37,6 +37,8 @@ IDLE, NO_TARGET, SEARCHING, TRACKING, ANGLE_FIXED, LOST, NO_VIDEO = (
 FIXED_EXIT_MARGIN = 0.05  # the target must leave a fixed area by this share of its size (no flapping)
 QUIET_AFTER_MOVE = 1.0  # s after our own moves before camera motion counts as someone else's
 AIR_BLEND_S = 1.0  # seconds to blend between the normal and the on-air motion
+POSE_SPEED_WINDOW = 0.15  # s of position history for the camera's speed (moving the newest position on to now)
+POSE_AHEAD_MAX = 0.1  # s: a position is moved on at most this far
 CUE_TIMEOUT = 8.0  # s an audio cue waits for its person to show up
 STILL_BEFORE_RESUME = 1.0  # s the camera must be still before tracking restarts after a manual move
 AREA_KINDS = ("priority", "fixed", "auto_select", "exclusion", "halting")
@@ -704,13 +706,24 @@ class CameraSession:
         if self.target_id is None or self.lost_since is not None or self.fixed is not None:
             self._send(0, 0, 0)  # no-op during our own absolute moves (nothing new to send)
             return
-        cmd = self.controller.command(now, Pose(now, pose.pan, pose.tilt, pose.zoom))
+        cmd = self.controller.command(now, self._pose_for_control(now, pose))
         self.debug = cmd.debug
         if self.move and (cmd.pan or cmd.tilt or cmd.zoom):
             self.move = None  # following the target takes over from the absolute move
             self.quiet_until = now + QUIET_AFTER_MOVE
         if not self.move:
             self._send(cmd.pan, cmd.tilt, cmd.zoom)
+
+    def _pose_for_control(self, now: float, pose: Pose) -> Pose:
+        """Where the camera points at `now`: its newest position moved on with its speed over the last
+        POSE_SPEED_WINDOW s. A polled position (no FreeD) is about 50 ms old when the command is worked out,
+        which at a tight shot of a walking person is a few percent of the picture."""
+        ahead = min(now - pose.t, POSE_AHEAD_MAX)
+        old = self.link.pose_at(pose.t - POSE_SPEED_WINDOW) if ahead > 0 else None
+        if old is None or pose.t - old.t <= 0:
+            return Pose(now, pose.pan, pose.tilt, pose.zoom)
+        k = ahead / (pose.t - old.t)
+        return Pose(now, pose.pan + (pose.pan - old.pan) * k, pose.tilt + (pose.tilt - old.tilt) * k, pose.zoom)
 
     def _while_lost(self, now: float) -> None:
         slot = self.slot
