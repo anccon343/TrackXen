@@ -12,6 +12,7 @@
   const comp = (values: Record<string, number | boolean>) => slots.patch({ composition: values });
 </script>
 
+<h3 class="sub first">Framing</h3>
 <div class="row"><span>Display Position</span>
   <button class="small" class:on={ui.mouseMode === "silhouette"}
           onclick={() => (ui.mouseMode = ui.mouseMode === "silhouette" ? "select" : "silhouette")}>
@@ -31,6 +32,7 @@
   <Toggle checked={c.auto_zoom} disabled={!c.display_size || sitStand} onchange={(on) => comp({ auto_zoom: on })} /></div>
 {#if help}<p class="help">Keep zooming during tracking so the display size stays the same.</p>{/if}
 
+<h3 class="sub">Movement</h3>
 <div class="row"><span>Pan/Tilt Halting Area</span>
   <Toggle checked={slot.halting_area} onchange={(on) => slots.patch({ halting_area: on })} /></div>
 {#if help}<p class="help">The camera stays still while the target's face is inside this frame around the display position. Smaller is livelier. Off: movement follows the sensitivity alone. Re-check it after changing the display size.</p>{/if}
@@ -53,4 +55,8 @@
   .label { font-size: 12px; color: var(--dim); margin-top: 6px; }
   .help { font-size: 12px; color: var(--dim); margin: 0 0 4px; }
   .small { min-height: 28px; padding: 2px 10px; font-size: 12px; }
+  /* where the person sits in the picture, then how the camera moves to keep them there */
+  .sub { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--dim);
+         margin: 12px 0 2px; }
+  .sub.first { margin-top: 2px; }
 </style>

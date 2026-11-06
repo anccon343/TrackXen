@@ -77,8 +77,12 @@ their position 20 times a second over VISCA.
 
 - The four pictures show what each camera sees. A red border and **LIVE** = that camera is on
   Program in vMix.
-- Click a camera to control it on the right. **Auto Tracking** on/off; the **Status** shows: No target
-  selected, Searching, Tracking, Angle Fixed, Target lost.
+- Click a camera to control it on the right. The **Tracking** tab starts with what you need during a
+  service: **Auto Tracking** on/off (also on each picture's header), the **Status** (No target
+  selected, Searching, Tracking, Angle Fixed, Target lost) and the target; then On Air and Audio
+  follow; then the App Settings. **Save** stays at the bottom of the panel.
+- Above the pictures: the **Mouse** mode (what a click in the picture does) and **View Initial
+  Position** for the selected camera. The camera list on the left appears from two cameras on.
 - **Pick the person** by clicking them in the picture ("Tracking Target Select" mouse mode). With Auto
   Select or registered faces switched on, TrackXen picks by itself.
 - **App Settings 1-5:** five complete tracking setups per camera (for example "Sermon", "Worship",

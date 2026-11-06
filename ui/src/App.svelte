@@ -6,6 +6,7 @@
   import TopBar from "./components/TopBar.svelte";
   import CameraList from "./components/CameraList.svelte";
   import MultiView from "./components/MultiView.svelte";
+  import VideoToolbar from "./components/VideoToolbar.svelte";
   import ControlPanel from "./components/ControlPanel.svelte";
   import StatusBar from "./components/StatusBar.svelte";
   import StatisticsPage from "./components/StatisticsPage.svelte";
@@ -30,16 +31,20 @@
   <PinScreen onsignedin={() => live.connect()} />
 {:else}
 <div class="app">
-  <TopBar {view} onview={(v) => { view = v; setup = null; }} />
+  <TopBar {view} onview={(v) => { view = v; setup = null; }}
+          onperformance={() => { settingsPage = "performance"; view = "settings"; setup = null; }} />
   <main>
     {#if view === "cameras" && live.status && cameras.length === 0}
       <Welcome onsettings={(page) => { settingsPage = page; view = "settings"; }} />
     {:else if view === "cameras" && setup && camera}
       <Wizard {camera} mode={setup} onclose={() => (setup = null)} />
     {:else if view === "cameras"}
-      <div class="cameras">
-        <CameraList selected={camera?.id ?? null} onselect={(id) => (selected = id)} />
-        <MultiView selected={camera?.id ?? null} onselect={(id) => (selected = id)} />
+      <div class="cameras" class:one={cameras.length <= 1}>
+        {#if cameras.length > 1}<CameraList selected={camera?.id ?? null} onselect={(id) => (selected = id)} />{/if}
+        <div class="center">
+          <VideoToolbar {camera} />
+          <MultiView selected={camera?.id ?? null} onselect={(id) => (selected = id)} />
+        </div>
         <ControlPanel {camera} onsetup={(mode) => (setup = mode)} />
       </div>
     {:else if view === "statistics"}
@@ -58,13 +63,16 @@
   main { min-height: 0; overflow: hidden; }
   .cameras { display: grid; grid-template-columns: 200px minmax(0, 1fr) 320px; height: 100%; }
   .cameras > :global(*) { min-height: 0; }
+  .cameras.one { grid-template-columns: minmax(0, 1fr) 320px; }  /* one camera: no list beside its own picture */
+  .center { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .center > :global(.grid) { flex: 1; min-height: 0; }
   .toast { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); background: #111; border: 1px solid var(--accent);
            border-radius: var(--radius); padding: 8px 14px; z-index: 30; max-width: calc(100vw - 32px); }
   @media (max-width: 1100px) {
-    .cameras { grid-template-columns: minmax(0, 1fr) 300px; }
+    .cameras, .cameras.one { grid-template-columns: minmax(0, 1fr) 300px; }
     .cameras > :global(.list) { display: none; }
   }
   @media (max-width: 760px) {
-    .cameras { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow-y: auto; }
+    .cameras, .cameras.one { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow-y: auto; }
   }
 </style>

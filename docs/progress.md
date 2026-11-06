@@ -1029,6 +1029,27 @@ makes 9.3 on average, 0-19.6 per seed, so a limit of 10 failed or passed with th
 - **Tests:** 59 new (56 engine, 3 tools); 466 passed and 4 skipped (environmental). ruff, svelte-check
   and the UI build are clean.
 
+## 2026-11-06: layout review of the web UI
+
+Every page was checked in the browser with the simulator at 1920x1080, 1366x768, 1024x768 and a
+390-px phone. Changes, each for a problem seen in the screenshots:
+- **On/off switches** said "On" next to a switch that was off. They now say On or Off.
+- **The mouse mode and View Initial Position** were in the right panel, away from the picture they act
+  on. They are now above the pictures, where Canon's app has them (reference.md 4.1).
+- **Tracking panel order:** the controls used during a service come first (Auto Tracking, Status,
+  target), then On Air and Audio follow, then App Settings 1-5 and the setting sections. **Save** and
+  **Initialization** stay at the bottom of the panel instead of below a long scroll. Registered Face
+  Tracking can be switched there too (Canon has it on that screen).
+- **Composition** is split into Framing (where the person sits, display size) and Movement (halting
+  area, sensitivity, smoothness), on the panel and in wizard step 5.
+- **Each picture's header** has an Auto Tracking switch instead of an "Auto Tracking OFF" button that
+  read like a state. The status badge shows only when tracking is on (it said "Off" twice before).
+- **One camera:** the camera list on the left is hidden (it only repeated the picture), and the
+  picture uses the freed width but stays sized to fit the screen with its header and info rows.
+- **Settings:** fields are at most 1100 px wide on large screens. Pages without an Apply button say how
+  their changes take effect. Help texts named a "Settings → Connections" page that is called
+  "vMix & mixer". The performance badge in the top bar opens Settings → Performance.
+
 ## Audits
 
 - **End of Phase 2:** structure OK. Fixed: camera loops that could die silently; missing Origin check;

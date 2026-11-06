@@ -2,6 +2,7 @@
   import { fmt, live, stat, type CameraStatus } from "../lib/live.svelte";
   import { STATE_TEXT } from "../lib/ui.svelte";
   import VideoCanvas from "./VideoCanvas.svelte";
+  import Toggle from "../ui/Toggle.svelte";
 
   // One camera in the multi-view, like a slot in Canon's Remote Camera Control Application.
   let { camera, index, selected = false, onselect, onfocus }: {
@@ -17,10 +18,12 @@
     <span class="num" class:active={camera.tracking}>{index + 1}</span>
     <span class="name">{camera.name}</span>
     {#if camera.on_air}<span class="badge live-badge" title={camera.on_air_manual === null ? "On Program in vMix" : "On air (manual switch)"}>LIVE</span>{/if}
-    <span class="badge state-{camera.state}">{STATE_TEXT[camera.state] ?? camera.state}</span>
-    <button class:on={camera.tracking} onclick={(e) => { e.stopPropagation(); live.send({ type: "tracking", camera: camera.id, on: !camera.tracking }); }}>
-      Auto Tracking {camera.tracking ? "ON" : "OFF"}
-    </button>
+    {#if camera.state !== "idle"}<span class="badge state-{camera.state}">{STATE_TEXT[camera.state] ?? camera.state}</span>{/if}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <span class="auto" onclick={(e) => e.stopPropagation()} ondblclick={(e) => e.stopPropagation()}>
+      <span class="dim">Auto Tracking</span>
+      <Toggle checked={camera.tracking} onchange={(on) => live.send({ type: "tracking", camera: camera.id, on })} />
+    </span>
   </header>
   <div class="info top">
     <span>{camera.source?.source ?? "no source"}</span>
@@ -44,8 +47,8 @@
          border-radius: 3px; flex: none; }
   .num.active { background: var(--accent); }
   .name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  header button { min-height: 28px; font-size: 12px; padding: 4px 10px; }
-  .info { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; font-size: 12px;
+  .auto { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+  .info { flex: none; display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; font-size: 12px;
           color: var(--dim); white-space: nowrap; overflow: hidden; }
   .info.top { padding-top: 2px; padding-bottom: 2px; }
 </style>

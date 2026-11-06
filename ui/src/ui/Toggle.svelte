@@ -1,6 +1,7 @@
 <script lang="ts">
-  // On/off switch in the Canon style: orange when on, with an "On" label.
-  let { checked = false, label = "On", disabled = false, onchange }: {
+  // On/off switch in the Canon style: orange when on. The label says the state ("On" / "Off"), unless
+  // a fixed label is given ("" for none).
+  let { checked = false, label, disabled = false, onchange }: {
     checked?: boolean; label?: string; disabled?: boolean; onchange?: (value: boolean) => void;
   } = $props();
 </script>
@@ -8,7 +9,7 @@
 <button type="button" class="toggle" class:on={checked} {disabled} role="switch" aria-checked={checked}
         onclick={() => onchange?.(!checked)}>
   <span class="track"><span class="knob"></span></span>
-  <span class="label">{label}</span>
+  {#if label !== ""}<span class="label">{label ?? (checked ? "On" : "Off")}</span>{/if}
 </button>
 
 <style>
@@ -21,5 +22,6 @@
           background: #ddd; transition: left 0.15s; }
   .on .track { background: var(--accent); border-color: var(--accent); }
   .on .knob { left: 20px; }
-  .label { font-size: 12px; color: var(--dim); }
+  .label { font-size: 12px; color: var(--dim); min-width: 22px; text-align: left; }
+  .on .label { color: var(--text); }
 </style>

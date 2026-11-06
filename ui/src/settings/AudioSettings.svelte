@@ -67,7 +67,7 @@
 
 {#if audio}
   <div class="row"><span>Audio follow</span><Toggle checked={audio.enabled} onchange={(on) => save({ enabled: on })} /></div>
-  <p class="dim">Needs the mixer (Settings → Connections). Each camera can be left out with its own Audio follow switch
+  <p class="dim">Needs the mixer (Settings → vMix & mixer). Each camera can be left out with its own Audio follow switch
     on the tracking panel. A camera the operator just used is left alone.</p>
 
   <h2 class="section">Speech detection</h2>

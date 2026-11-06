@@ -11,7 +11,7 @@
 
 <h2 class="section">On-Air Motion (while live on Program)</h2>
 <div class="row"><span>Calmer motion while live</span><Toggle checked={oa.enabled} onchange={(on) => set({ enabled: on })} /></div>
-<p class="help">Live is known from vMix tally (Settings → Connections) or the On Air switch. The change is blended over a second.</p>
+<p class="help">Live is known from vMix tally (Settings → vMix & mixer) or the On Air switch. The change is blended over a second.</p>
 {#if oa.enabled}
   <span class="label">Top speed while live</span>
   <NumberSlider value={oa.speed} min={0.1} max={1} step={0.05} digits={2} minLabel="slow" maxLabel="normal" onchange={(v) => set({ speed: v })} />
