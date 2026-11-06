@@ -71,6 +71,9 @@ jobs:
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
 
+      - name: Tests
+        run: .venv\Scripts\python -m pytest -q -p no:cacheprovider
+
       - name: Build number into the program
         id: version
         run: |
@@ -83,9 +86,6 @@ jobs:
           COMMIT = "${{ github.sha }}"
           "@ | Set-Content -Encoding utf8 engine\trackxen\_build.py
           "version=$version" >> $env:GITHUB_OUTPUT
-
-      - name: Tests
-        run: .venv\Scripts\python -m pytest -q -p no:cacheprovider
 
       - name: Setup program
         run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Version ${{ steps.version.outputs.version }}

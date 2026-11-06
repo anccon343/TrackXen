@@ -451,6 +451,9 @@ def run(spec: RunSpec) -> dict:
     world = _World()
     with _virtual(world):
         loop = asyncio.SelectorEventLoop(_VirtualSelector(world))
+        # asyncio runs every timer due within the clock's resolution at once: 15.6 ms on Windows, which would
+        # give the 200 Hz camera samples equal times. The virtual clock is exact.
+        loop._clock_resolution = 1e-9
         try:
             return loop.run_until_complete(_run(spec))
         finally:

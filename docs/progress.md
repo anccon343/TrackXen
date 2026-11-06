@@ -14,7 +14,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
 .venv\Scripts\python tools\motion_bench.py --check   (pan/tilt smoothness in virtual time, about 10 s)
-.venv\Scripts\python -m pytest                  (480 tests)
+.venv\Scripts\python -m pytest                  (481 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -1076,8 +1076,17 @@ Every page was checked in the browser with the simulator at 1920x1080, 1366x768,
 - Refused while a camera is on air, and in a development copy (it can check and download there).
 - Tests: `tests/test_updates.py` (token kept apart, release parsing and build comparison, failures
   explained, checksum mismatch rejected, installed-only, on-air refusal, launch then close).
-- Not tried here: a real release build on GitHub and an install on Windows (this machine is Linux);
-  the first push to `main` runs the workflow.
+- Not tried here: an install on Windows (this machine is Linux).
+- **The first release build on GitHub ran the tests on Windows for the first time** and three failed:
+  - A real Windows defect: `time.monotonic()` moves in 15.6 ms steps there, so a FreeD position that
+    arrived in the same step as a VISCA position inquiry started didn't count as newer, and the older
+    polled position was added after it. Now FreeD in the same step counts as newer
+    (`test_freed_in_the_same_clock_tick_as_a_poll_is_still_the_newer` reproduces the coarse clock).
+  - `tools/motion_bench.py` gave NaN accelerations on Windows: asyncio runs every timer due within the
+    clock's resolution at once, so the 200 Hz samples got equal times. The bench's virtual loop now has
+    an exact resolution (same numbers as on Linux).
+  - The version test failed once the build number was written into the program; the tests now run
+    before that step, and the test accepts a release build's number.
 
 ## Audits
 

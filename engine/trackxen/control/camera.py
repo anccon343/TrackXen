@@ -201,7 +201,7 @@ class CameraLink:
                 pan, tilt = await self.visca.pan_tilt_position()
                 zoom = await self.visca.zoom_position()
                 self._answered()
-                if self.last_freed > t0:
+                if self.last_freed >= t0:  # (>=: on Windows the clock moves in 15.6 ms steps)
                     continue  # FreeD came back meanwhile: newer (and the history stays in time order)
                 # (the same frame as absolute moves, so the same signs)
                 self.history.append(Pose((t0 + time.monotonic()) / 2,

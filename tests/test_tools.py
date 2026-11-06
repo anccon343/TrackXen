@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import math
 import re
 import subprocess
 import sys
@@ -282,6 +283,7 @@ def test_motion_bench_gives_the_same_numbers_each_time_and_puts_the_clock_back(m
     case = tool.Case.parse("walk1.2-p400-50")
     results = tool.run_cases([case], seeds=[1])
     assert (time.monotonic, udp.open_udp) == real
+    assert all(math.isfinite(results[0][axis]["acc_rms"]) for axis in ("pan", "tilt"))  # (exact sample times)
     saved = tmp_path / "bench.json"
     assert tool.main([case.name, "--seeds", "1", "--jobs", "1", "--check", "--json", str(saved)]) == 0
     assert json.loads(saved.read_text(encoding="utf-8")) == results
@@ -309,5 +311,5 @@ def test_version_is_the_same_everywhere():
     assert (ROOT / "LICENSE-NOTICE.txt").read_text(encoding="utf-8").startswith(f"TrackXen {v} ")
     from trackxen.core.updates import current  # (what Settings → System → Updates shows, without a release build)
 
-    assert current()["version"] == v
+    assert current()["version"] in (v, f"{v}.{current()['build']}")  # (a release build adds its number)
     assert f"TrackXen-Setup-{v}.exe" in (ROOT / "docs" / "user-guide.md").read_text(encoding="utf-8")

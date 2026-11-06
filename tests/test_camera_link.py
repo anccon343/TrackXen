@@ -697,6 +697,30 @@ def test_a_poll_answered_after_freed_came_back_is_not_added_out_of_order():
     asyncio.run(run())
 
 
+def test_freed_in_the_same_clock_tick_as_a_poll_is_still_the_newer(monkeypatch):
+    """On Windows time.monotonic() moves in 15.6 ms steps: FreeD arriving in the same step as an inquiry
+    started is newer than the inquiry's answer, and the answer is not added after it."""
+    real = time.monotonic
+    monkeypatch.setattr(time, "monotonic", lambda: real() // 0.015625 * 0.015625)
+
+    async def run():
+        link = CameraLink("cam1", CameraLinkConfig(host="127.0.0.1", freed_port=40001, poll_hz=50))
+        link.visca = slow = SlowInquiries()
+        task = asyncio.create_task(link._poll_loop())
+        try:
+            await asyncio.wait_for(slow.asked.wait(), 1.0)
+            pos = freed.FreeDPosition(1, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0)
+            link._on_freed(pos, ("127.0.0.1", 40001), time.monotonic())  # (most likely the inquiry's own tick)
+            slow.answer.set()
+            await asyncio.sleep(0.1)
+            assert [p.pan for p in link.history] == [3.0]
+        finally:
+            task.cancel()
+
+    for _ in range(5):  # (FreeD lands in the inquiry's tick in most runs)
+        asyncio.run(run())
+
+
 def test_a_position_too_old_to_trust_is_not_used():
     """K55: when positions stop arriving, the last one isn't taken for the current one."""
     link = CameraLink("cam1", CameraLinkConfig(host="127.0.0.1"))
