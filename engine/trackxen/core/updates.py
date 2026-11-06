@@ -59,10 +59,11 @@ class UpdateError(Exception):
 
 class Updater:
     def __init__(self, folder: Path, log: Callable[[str, str], None] | None = None, repo: str = REPO,
-                 api: str = API, client_factory: Callable[[], object] | None = None):
+                 api: str | None = None, client_factory: Callable[[], object] | None = None):
         self.folder = folder  # the data folder: update.json, and updates/ for the download
         self.log = log or (lambda level, message: None)
-        self.repo, self.api = repo, api
+        # TRACKXEN_UPDATE_API: a stand-in for GitHub's API, to try the whole update on a test PC
+        self.repo, self.api = repo, (api or os.environ.get("TRACKXEN_UPDATE_API") or API).rstrip("/")
         self._client_factory = client_factory
         self.current = current()
         self.state = "idle"  # idle | checking | downloading | ready | error
