@@ -25,6 +25,9 @@ SAME_PERSON = 0.363  # cosine similarity
 RECHECK_S = 0.5  # how often each person's face is looked at
 MIN_FACE_PX = 24  # smaller faces are not compared (too little detail)
 GUIDE = 0.34  # registration frame: a centred square this share of the picture height
+# A face registered from a chosen person (not the centred frame) must be at least this share of the picture
+# height wide: the size the centred frame asks for would be 0.34 x 0.35 = 0.12, which needs a close-up.
+MIN_PICKED_FACE = 0.06
 
 
 def available(models: Path) -> bool:
@@ -38,15 +41,17 @@ class Job:
     crop: np.ndarray  # BGR
     track_id: int = 0
     capture: int = 0  # guide jobs: a capture request number (0 = only check the quality)
+    frame: tuple[float, float, float, float] | None = None  # guide jobs on a chosen person: the crop in the picture, 0..1
+    min_face: float = 0.0  # guide jobs on a chosen person: the smallest usable face width, pixels
     near: tuple[float, float, float] | None = None  # identify jobs: the person's head in the crop (head_view)
 
 
-def head_view(image: np.ndarray, box: list[float],
-              keypoints: list[list[float]]) -> tuple[np.ndarray, tuple[float, float, float]] | None:
-    """A square around the head: from the face keypoints when seen, else the top of the box.
-    Returns the crop and where the head is in it: x, y of its centre (off the crop's centre when
-    the square was cut at the picture's edge) and the square's side. None when too small."""
-    h, w = image.shape[:2]
+def head_square(shape: tuple[int, ...], box: list[float],
+                keypoints: list[list[float]]) -> tuple[int, int, int, int, float, float, float] | None:
+    """A square around the head: from the face keypoints when seen, else the top of the box. Returns its
+    left, top, right, bottom in the picture (cut at the picture's edge) and the head's centre and the square's
+    side before cutting; None when too small."""
+    h, w = shape[:2]
     face = [(x, y) for x, y, c in keypoints[:5] if c >= 0.3]
     x1, y1, x2, y2 = box
     if len(face) >= 2:
@@ -60,6 +65,17 @@ def head_view(image: np.ndarray, box: list[float],
     right, bottom = int(min(w, cx + half)), int(min(h, cy + half))
     if right - left < MIN_FACE_PX or bottom - top < MIN_FACE_PX:
         return None
+    return left, top, right, bottom, cx, cy, size
+
+
+def head_view(image: np.ndarray, box: list[float],
+              keypoints: list[list[float]]) -> tuple[np.ndarray, tuple[float, float, float]] | None:
+    """The head_square's crop, and where the head is in it: x, y of its centre (off the crop's centre when
+    the square was cut at the picture's edge) and the square's side. None when too small."""
+    sq = head_square(image.shape, box, keypoints)
+    if sq is None:
+        return None
+    left, top, right, bottom, cx, cy, size = sq
     return image[top:bottom, left:right].copy(), (cx - left, cy - top, size)
 
 
@@ -147,6 +163,7 @@ class FaceWorker:
         self.identities: dict[tuple[str, int], tuple[str, float, float]] = {}  # (camera, track) -> id, score, when
         self.checked: dict[tuple[str, int], float] = {}
         self.guides: dict[str, int] = {}  # camera -> pending capture number (0 = only checking)
+        self.picks: dict[str, int] = {}  # camera -> the person (track id) to register; none: the centred frame
         self.lock = threading.Lock()  # for `guides`: the face thread takes a capture, the loop opens and closes
         self.failed = False  # the models couldn't be loaded: the thread has ended
         self._last_guide: dict[str, float] = {}
@@ -163,7 +180,7 @@ class FaceWorker:
             return
         if camera in self.guides and now - self._last_guide.get(camera, 0.0) >= 0.2:
             self._last_guide[camera] = now
-            self._put(Job("guide", camera, guide_crop(image), capture=self.guides[camera]))
+            self._guide_job(camera, image, tracks)
         if not self.gallery:
             return
         alive = {(camera, t.id) for t in tracks}
@@ -177,6 +194,26 @@ class FaceWorker:
             self.checked[(camera, t.id)] = now
             if view is not None:
                 self._put(Job("identify", camera, view[0], track_id=t.id, near=view[1]))
+
+    def _guide_job(self, camera: str, image: np.ndarray, tracks: list) -> None:
+        """The registration frame: centred, or around the head of the person chosen in the picture."""
+        capture = self.guides.get(camera, 0)
+        pick = self.picks.get(camera)
+        if pick is None:
+            self._put(Job("guide", camera, guide_crop(image), capture=capture))
+            return
+        h, w = image.shape[:2]
+        person = next((t for t in tracks if t.id == pick and t.missed == 0), None)
+        sq = None if person is None else head_square(image.shape, person.box, person.keypoints)
+        if sq is None:
+            self.emit({"type": "face_guide", "camera": camera, "ok": False, "box": None, "frame": None,
+                       "problem": "the chosen person is not in the picture: click them again" if person is None
+                       else "too small: zoom in"})
+            return
+        left, top, right, bottom = sq[:4]
+        frame = (round(left / w, 4), round(top / h, 4), round((right - left) / w, 4), round((bottom - top) / h, 4))
+        self._put(Job("guide", camera, image[top:bottom, left:right].copy(), capture=capture, frame=frame,
+                      min_face=MIN_PICKED_FACE * h))
 
     def identity(self, camera: str, track_id: int) -> dict | None:
         found = self.identities.get((camera, track_id))
@@ -221,8 +258,14 @@ class FaceWorker:
     def _guide(self, engine: FaceEngine, job: Job) -> None:
         face = engine.find(job.crop)
         problem = engine.quality(job.crop, face)
+        if job.frame is not None:  # a chosen person: the frame follows their head
+            if face is not None and face[2] < job.min_face and problem in ("", "too large: step back or zoom out"):
+                problem = "too small: zoom in"
+            elif problem == "centre the face in the frame":
+                problem = "too near the picture's edge: move the camera"
         box = None if face is None else [round(float(v) / job.crop.shape[0], 3) for v in face[:4]]
-        self.emit({"type": "face_guide", "camera": job.camera, "ok": not problem, "problem": problem, "box": box})
+        self.emit({"type": "face_guide", "camera": job.camera, "ok": not problem, "problem": problem, "box": box,
+                   "frame": list(job.frame) if job.frame else None})
         if not job.capture or problem:
             return
         with self.lock:  # take the capture first: a frame closed meanwhile stays closed

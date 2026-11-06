@@ -68,7 +68,10 @@ export interface CameraStatus {
   posture: "" | "sitting" | "standing";
   target_face: string | null;
   faces: { id: string; enabled: boolean }[];
-  face_guide: { ok: boolean; problem: string; box: [number, number, number, number] | null } | null;
+  // frame: where the registration frame is in the picture (0..1: x, y, width, height) when it follows a chosen
+  // person; null or missing: the centred frame
+  face_guide: { ok: boolean; problem: string; box: [number, number, number, number] | null;
+                frame?: [number, number, number, number] | null } | null;
   face_capturing: boolean;
   on_air: boolean; // on Program: vMix tally, or the manual switch
   on_air_tally: boolean;

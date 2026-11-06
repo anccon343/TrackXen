@@ -234,8 +234,16 @@ changes again. The Audio follow and On Air switches stay as they were over an Ap
 
 ## 5. Registering a face
 
-Wizard page 9 → **Register**. Ask the person to face the camera; zoom in so the face fills the frame
-on the picture. When the frame turns **green**, type a name and press **Capture**. Register in the real
+Setting Wizard → **Registered Face Tracking** → **Register**. Then choose whose face:
+
+- **In the centre frame:** ask the person to face the camera and zoom in so the face fills the frame in
+  the middle of the picture.
+- **Click a person…** and click anyone in the picture, wherever they stand: the frame then follows that
+  person's head. Their face must be big enough (about 6 % of the picture's height, roughly 65 pixels in a
+  1080p picture): zoom in if the frame says "too small: zoom in". If they leave the picture, click them
+  again.
+
+When the frame turns **green**, type a name and press **Capture**. Register in the real
 conditions (same glasses, similar light). Tick or untick each face per camera, and drag the order:
 higher in the list wins when two registered people appear.
 

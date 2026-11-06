@@ -226,7 +226,7 @@ class VisionLoop:
                 return
             old, self.faces = self.faces, faces.FaceWorker(models, self.emit)
             if old:
-                self.faces.gallery, self.faces.guides = old.gallery, old.guides
+                self.faces.gallery, self.faces.guides, self.faces.picks = old.gallery, old.guides, old.picks
         kind = msg["type"]
         if kind == "faces":
             self.faces.set_gallery(msg["gallery"])
@@ -235,8 +235,13 @@ class VisionLoop:
             if kind == "face_guide":
                 if msg["on"]:
                     self.faces.guides.setdefault(msg["camera"], 0)
+                    if msg.get("track") is None:  # the centred frame
+                        self.faces.picks.pop(msg["camera"], None)
+                    else:  # around the head of the person chosen in the picture
+                        self.faces.picks[msg["camera"]] = int(msg["track"])
                 else:
                     self.faces.guides.pop(msg["camera"], None)
+                    self.faces.picks.pop(msg["camera"], None)
             else:
                 self.faces.guides[msg["camera"]] = int(msg["capture"])
 

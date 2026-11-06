@@ -232,3 +232,59 @@ def test_same_face_matches_and_another_does_not():
     for _ in range(10):
         engine.fingerprint(crops[0], engine.find(crops[0]))
     assert (time.perf_counter() - t0) / 10 < 0.05  # well under 50 ms per look on the CPU
+
+
+def picked_person(cx=500):
+    """A person facing the camera, left of the middle of a 1920-wide picture: their head square is 240 px."""
+    from trackxen.vision.tracker import TrackOut
+
+    kp = [[cx, 260, 0.9], [cx - 15, 250, 0.9], [cx + 15, 250, 0.9], [cx - 40, 255, 0.9], [cx + 40, 255, 0.9]]
+    return TrackOut(4, [cx - 200, 200, cx + 200, 900], 0.9, kp + [[0, 0, 0]] * 12, (0, 0), 0, 1.0)
+
+
+def test_a_face_is_registered_from_the_person_clicked_anywhere_in_the_picture(monkeypatch):
+    """Not only in the centred frame: the frame follows the chosen person's head, and Capture takes that face."""
+    from trackxen.vision.worker import VisionLoop
+
+    sent, worker, _ = face_worker(monkeypatch, [face_row(65, 65, 110, 110)], {65: one_hot(0)})
+    loop = VisionLoop.__new__(VisionLoop)
+    loop.faces, loop.emit = worker, sent.append
+    loop._face_command({"type": "face_guide", "camera": "cam1", "on": True, "track": 4})
+    loop._face_command({"type": "face_capture", "camera": "cam1", "capture": 5})
+    worker.submit("cam1", np.full((1080, 1920, 3), 128, np.uint8), [picked_person()], 1.0)
+    settle(worker, sent)
+    guide = next(m for m in sent if m["type"] == "face_guide" and m["camera"] == "cam1")
+    assert guide["ok"] and guide["frame"] == [round(380 / 1920, 4), round(135 / 1080, 4), 0.125, round(240 / 1080, 4)]  # (head centre 500, 255)
+    captured = [m for m in sent if m["type"] == "face_captured"]
+    assert [m["capture"] for m in captured] == [5] and captured[0]["feature"][0] == pytest.approx(1.0)
+    # back to the centred frame: no person chosen any more
+    loop._face_command({"type": "face_guide", "camera": "cam1", "on": True})
+    assert worker.picks == {}
+
+
+def test_a_chosen_person_who_left_or_whose_face_is_too_small_is_reported(monkeypatch):
+    sent, worker, _ = face_worker(monkeypatch, [face_row(75, 75, 90, 90)], {75: one_hot(0)})
+    worker.guides["cam1"], worker.picks["cam1"] = 0, 9  # person 9 is not in the picture
+    worker.submit("cam1", np.full((1080, 1920, 3), 128, np.uint8), [picked_person()], 1.0)
+    assert sent[-1]["problem"].startswith("the chosen person is not in the picture") and not sent[-1]["ok"]
+    worker.picks["cam1"] = 4  # in a 4K picture 90 px is under 6 % of its height: too small to register
+    worker.submit("cam1", np.full((2160, 3840, 3), 128, np.uint8), [picked_person()], 2.0)
+    settle(worker, sent)
+    guide = [m for m in sent if m["type"] == "face_guide" and m["camera"] == "cam1"][-1]
+    assert not guide["ok"] and guide["problem"] == "too small: zoom in"
+
+
+def test_the_registration_frame_command_passes_on_the_chosen_person():
+    from types import SimpleNamespace
+
+    from trackxen.core.faces import FaceManager
+
+    manager = FaceManager.__new__(FaceManager)
+    manager.guides, manager.captures, sent = {}, {}, []
+    manager._to_worker = sent.append
+    session = SimpleNamespace(cfg=SimpleNamespace(id="cam1", faces=[]))
+    assert manager.command(session, "face_guide", {"on": True, "track": 4}) == {"ok": True}
+    assert manager.command(session, "face_guide", {"on": True}) == {"ok": True}
+    assert [m["track"] for m in sent] == [4, None]
+    assert manager.command(session, "face_guide", {"on": True, "track": "4"})["ok"] is False
+    assert manager.command(session, "face_guide", {"on": True, "track": True})["ok"] is False

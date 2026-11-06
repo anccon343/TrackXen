@@ -11,6 +11,10 @@ class Faces {
   cameras = $state<Record<string, FaceRef[]>>({});
   /** Camera whose picture shows the registration frame, if any. */
   guide = $state<string | null>(null);
+  /** The frame follows this person's head (their number in the picture); null: the centred frame. */
+  picked = $state<number | null>(null);
+  /** Waiting for a click on the person whose face to register (this camera). */
+  picking = $state<string | null>(null);
   version = $state(0); // bumps thumbnails' URLs after changes
   private loaded = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null; // stopGuide trying again
@@ -42,6 +46,26 @@ class Faces {
   async startGuide(camera: string): Promise<void> {
     this.newTurn();
     this.guide = camera;
+    this.picked = this.picking = null;
+    await live.request({ type: "face_guide", camera, on: true });
+  }
+
+  /** Register the face of a person clicked in the picture, wherever they are (not only in the centre). */
+  async pickPerson(camera: string, track: number): Promise<void> {
+    const reply = await live.request({ type: "face_guide", camera, on: true, track });
+    if (!reply.ok) {
+      ui.notify(reply.error ?? "Not possible");
+      return;
+    }
+    this.guide = camera;
+    this.picked = track;
+    this.picking = null;
+  }
+
+  /** Back to the frame in the middle of the picture. */
+  async centreFrame(camera: string): Promise<void> {
+    this.picking = null;
+    this.picked = null;
     await live.request({ type: "face_guide", camera, on: true });
   }
 
@@ -51,6 +75,7 @@ class Faces {
   async stopGuide(retry = false): Promise<void> {
     const camera = this.guide;
     const turn = this.newTurn();
+    this.picked = this.picking = null;
     if (!camera) return;
     const reply = await live.requestReliably({ type: "face_guide", camera, on: false });
     if (turn !== this.turn) return; // started or stopped again meanwhile

@@ -14,7 +14,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
 .venv\Scripts\python tools\motion_bench.py --check   (pan/tilt smoothness in virtual time, about 10 s)
-.venv\Scripts\python -m pytest                  (481 tests)
+.venv\Scripts\python -m pytest                  (484 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -1087,6 +1087,18 @@ Every page was checked in the browser with the simulator at 1920x1080, 1366x768,
     an exact resolution (same numbers as on Linux).
   - The version test failed once the build number was written into the program; the tests now run
     before that step, and the test accepts a release build's number.
+
+## 2026-11-06: register the face of any person in the picture
+
+Before, a face could only be registered from the frame in the middle of the picture, so the person had
+to stand in the centre (Canon's way). Now **Click a person…** on the registration panel, then a click
+on anyone in the picture, makes the registration frame follow that person's head
+(`FaceWorker.picks`, `head_square` in `vision/faces.py`; `face_guide` takes a `track`). The same quality
+checks apply; a chosen face must also be at least 6 % of the picture's height wide (the centred frame
+asks for 12 %), and "centre the face" reads "too near the picture's edge" there. If the chosen person
+leaves the picture the panel says so. Tests: `test_faces.py` (registered from a person left of the
+middle, the frame's place, a person who left, a face too small in 4K, the command's checks). Tried in
+the browser with the simulator.
 
 ## Audits
 

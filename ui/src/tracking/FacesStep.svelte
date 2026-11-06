@@ -105,8 +105,20 @@
 
 {#if registering}
   <div class="register">
-    <p><b>Registering on {camera.name}.</b> Ask the person to face the camera, centre the face in the frame
-      and fill it (zoom in with the slider). The frame turns green when the face is usable.</p>
+    <p><b>Registering on {camera.name}.</b> Whose face:</p>
+    <div class="segments" role="group" aria-label="Whose face">
+      <button class:on={faces.picked === null && faces.picking !== camera.id} onclick={() => faces.centreFrame(camera.id)}>In the centre frame</button>
+      <button class:on={faces.picked !== null || faces.picking === camera.id} onclick={() => (faces.picking = camera.id)}>
+        {faces.picked !== null ? `Person ${faces.picked}` : "Click a person…"}</button>
+    </div>
+    {#if faces.picking === camera.id}
+      <p class="hint">Click the person in the picture. They can be anywhere in it.</p>
+    {:else if faces.picked !== null}
+      <p class="hint">The frame follows person {faces.picked}'s head. Ask them to face the camera; zoom in if the face is too small.</p>
+    {:else}
+      <p class="hint">Ask the person to face the camera, centre the face in the frame and fill it (zoom in with the slider).</p>
+    {/if}
+    <p class="hint">The frame turns green when the face is usable.</p>
     <p class="status" class:ok={camera.face_guide?.ok}>{camera.face_guide ? (camera.face_guide.ok ? "Face is usable" : camera.face_guide.problem) : "Looking…"}</p>
     <input type="text" maxlength="40" placeholder="Name (for example Pastor)" bind:value={name} />
     <div class="buttons">
@@ -156,6 +168,9 @@
               display: flex; flex-direction: column; gap: 6px; }
   .register p { margin: 0; font-size: 13px; }
   .status { color: var(--yellow); font-weight: 600; }
+  .register .hint { font-size: 12px; color: var(--dim); }
+  .segments { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .segments button { min-height: 32px; font-size: 13px; }
   .status.ok { color: #3ddc6c; }
   .others { display: flex; flex-wrap: wrap; gap: 6px; }
   .other { display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 2px; }

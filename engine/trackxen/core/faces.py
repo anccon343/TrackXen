@@ -113,7 +113,7 @@ class FaceManager:
 
     def camera_status(self, camera: str) -> dict:
         guide = self.guides.get(camera)
-        return {"face_guide": ({k: guide[k] for k in ("ok", "problem", "box")}
+        return {"face_guide": ({k: guide.get(k) for k in ("ok", "problem", "box", "frame")}
                                if guide and time.monotonic() - guide["at"] < 1.0 else None),
                 "face_capturing": any(cam == camera for cam, _ in self.captures.values())}
 
@@ -148,7 +148,11 @@ class FaceManager:
     def command(self, session, kind: str, cmd: dict) -> dict:
         refs = session.cfg.faces
         if kind == "face_guide":  # the registration frame on this camera's picture, on or off
-            self._to_worker({"type": "face_guide", "camera": session.cfg.id, "on": bool(cmd["on"])})
+            # "track": the person to register (clicked in the picture); none: the centred frame
+            track = cmd.get("track")
+            if track is not None and (isinstance(track, bool) or not isinstance(track, int)):
+                return {"ok": False, "error": "track must be a person's number"}
+            self._to_worker({"type": "face_guide", "camera": session.cfg.id, "on": bool(cmd["on"]), "track": track})
             self.guides.pop(session.cfg.id, None)
             if not cmd["on"]:
                 self._drop_captures(session.cfg.id)

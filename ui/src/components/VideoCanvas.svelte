@@ -178,23 +178,36 @@
       label(ctx, text, bx, by, isTarget ? "#d9730d" : inGroup ? "rgba(217,115,13,0.6)" : "rgba(0,0,0,0.65)", dpr);
     }
 
-    // Registration frame (Canon step 9): turns green when the face in it can be registered
+    // Registration frame (Canon step 9): turns green when the face in it can be registered. In the centre,
+    // or around the head of the person chosen by clicking them (it follows them).
     if (faces.guide === camera.id || camera.face_guide) {
-      const size = 0.34 * h, gx = (w - size) / 2, gy = (h - size) / 2;
-      const ok = camera.face_guide?.ok ?? false;
-      ctx.fillStyle = "rgba(0,0,0,0.45)";
-      ctx.fillRect(0, 0, w, gy);
-      ctx.fillRect(0, gy + size, w, h - gy - size);
-      ctx.fillRect(0, gy, gx, size);
-      ctx.fillRect(gx + size, gy, w - gx - size, size);
-      ctx.strokeStyle = ok ? "#3ddc6c" : "#ffffff";
-      ctx.lineWidth = 3 * dpr;
-      ctx.strokeRect(gx, gy, size, size);
+      const f = camera.face_guide?.frame;
+      const choosing = faces.picking === camera.id;
       ctx.font = `${13 * dpr}px system-ui`;
       ctx.textAlign = "center";
-      ctx.fillStyle = ok ? "#3ddc6c" : "#ffffff";
-      ctx.fillText(ok ? "Face is usable: Capture" : camera.face_guide?.problem || "Face forward, centre your face, fill the frame",
-                   w / 2, gy + size + 20 * dpr);
+      if (choosing) {
+        ctx.textAlign = "start";
+        label(ctx, "Click the person whose face to register", 8 * dpr, 40 * dpr, "rgba(0,0,0,0.75)", dpr);
+      } else if (f || faces.picked === null) {
+        const [gx, gy, gw, gh] = f ? [f[0] * w, f[1] * h, f[2] * w, f[3] * h]
+                                   : [(w - 0.34 * h) / 2, (h - 0.34 * h) / 2, 0.34 * h, 0.34 * h];
+        const ok = camera.face_guide?.ok ?? false;
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(0, 0, w, gy);
+        ctx.fillRect(0, gy + gh, w, h - gy - gh);
+        ctx.fillRect(0, gy, gx, gh);
+        ctx.fillRect(gx + gw, gy, w - gx - gw, gh);
+        ctx.strokeStyle = ok ? "#3ddc6c" : "#ffffff";
+        ctx.lineWidth = 3 * dpr;
+        ctx.strokeRect(gx, gy, gw, gh);
+        ctx.fillStyle = ok ? "#3ddc6c" : "#ffffff";
+        const text = ok ? "Face is usable: Capture"
+          : camera.face_guide?.problem || (f ? "Face the camera" : "Face forward, centre your face, fill the frame");
+        ctx.fillText(text, Math.min(Math.max(gx + gw / 2, 150 * dpr), w - 150 * dpr), Math.min(gy + gh + 20 * dpr, h - 8 * dpr));
+      } else {  // a person was chosen: waiting for the first check of their face
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(camera.face_guide?.problem || "Looking for the chosen person's face…", w / 2, 40 * dpr);
+      }
       ctx.textAlign = "start";
     }
 
@@ -219,6 +232,24 @@
   }
 
   // --- pointer: what a click or a drag does depends on the mouse mode ---------------------
+
+  /** The person at a point of the picture (0..1): the smallest box around it, else the nearest within 15 % of
+   *  the width (like the engine's target select). */
+  function personAt(x: number, y: number): number | null {
+    const fw = camera.frame.width, fh = camera.frame.height;
+    if (!fw || !fh) return null;
+    const px = x * fw, py = y * fh;
+    const inside = camera.tracks.filter((t) => px >= t.box[0] && px <= t.box[2] && py >= t.box[1] && py <= t.box[3]);
+    if (inside.length) {
+      return inside.reduce((a, b) => ((a.box[2] - a.box[0]) * (a.box[3] - a.box[1]) <= (b.box[2] - b.box[0]) * (b.box[3] - b.box[1]) ? a : b)).id;
+    }
+    let best: number | null = null, bestD = 0.15 * fw;
+    for (const t of camera.tracks) {
+      const d = Math.hypot((t.box[0] + t.box[2]) / 2 - px, (t.box[1] + t.box[3]) / 2 - py);
+      if (d < bestD) [best, bestD] = [t.id, d];
+    }
+    return best;
+  }
 
   function point(e: PointerEvent): { x: number; y: number; px: number; py: number } {
     const r = canvas.getBoundingClientRect();
@@ -309,7 +340,11 @@
       sendSilhouette();
       setTimeout(() => (silhouetteAt = null), 400); // until the status shows the new position
     } else if (d.what === "click" && Math.hypot(p.x - d.x, p.y - d.y) < 0.02) {
-      if (ui.mouseMode === "center") {
+      if (faces.picking === camera.id) {  // choosing whose face to register
+        const person = personAt(p.x, p.y);
+        if (person === null) ui.notify("Nobody there: click a person");
+        else await faces.pickPerson(camera.id, person);
+      } else if (ui.mouseMode === "center") {
         const reply = await live.request({ type: "click_center", camera: camera.id, x: p.x, y: p.y });
         if (!reply.ok) ui.notify(reply.error ?? "Can't move there");
       } else {
