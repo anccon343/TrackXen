@@ -307,5 +307,7 @@ def test_version_is_the_same_everywhere():
 
     assert USER_AGENT.startswith(f"TrackXen/{v} ")
     assert (ROOT / "LICENSE-NOTICE.txt").read_text(encoding="utf-8").startswith(f"TrackXen {v} ")
-    assert f"<span>{v} " in (ROOT / "ui" / "src" / "settings" / "SystemSettings.svelte").read_text(encoding="utf-8")
+    from trackxen.core.updates import current  # (what Settings → System → Updates shows, without a release build)
+
+    assert current()["version"] == v
     assert f"TrackXen-Setup-{v}.exe" in (ROOT / "docs" / "user-guide.md").read_text(encoding="utf-8")

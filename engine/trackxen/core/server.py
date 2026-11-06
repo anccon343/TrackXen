@@ -29,6 +29,7 @@ from trackxen.core.access import COOKIE, HEADER, LOCAL, AccessGuard
 from trackxen.core.app import App
 from trackxen.core.config import AppConfig, CameraConfig
 from trackxen.core.performance import PRESETS
+from trackxen.core.updates import UpdateError
 
 STATIC = Path(__file__).resolve().parent / "static"
 OPEN_ROUTES = {"/api/access", "/api/access/login", "/api/access/logout"}  # usable before signing in
@@ -218,6 +219,43 @@ def create_server(app: App, guard: AccessGuard | None = None) -> FastAPI:
         from trackxen.core.hwtest import system_info
 
         return await asyncio.to_thread(system_info)
+
+    # --- updates from GitHub (Settings → System) ---------------------------------------------------
+
+    @api.get("/api/update")
+    async def update_status():
+        return app.updater.status()
+
+    @api.post("/api/update/token", dependencies=guarded)
+    async def update_token(body: dict):
+        """{"token": "github_pat_..."} keeps the access token for the private repository ("" forgets it)."""
+        try:
+            await asyncio.to_thread(app.updater.set_token, str(body.get("token") or ""))
+        except UpdateError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return app.updater.status()
+
+    @api.post("/api/update/check", dependencies=guarded)
+    async def update_check():
+        try:
+            return await asyncio.to_thread(app.updater.check)
+        except UpdateError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+
+    @api.post("/api/update/download", dependencies=guarded)
+    async def update_download():
+        try:
+            app.updater.download()
+        except UpdateError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return app.updater.status()
+
+    @api.post("/api/update/install", dependencies=guarded)
+    async def update_install():
+        reply = await app.install_update()
+        if not reply["ok"]:
+            raise HTTPException(status_code=409, detail=reply["error"])
+        return reply
 
     @api.get("/api/camera-models")
     async def camera_models():

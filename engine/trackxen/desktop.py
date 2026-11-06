@@ -102,12 +102,20 @@ def _engine(cfg, config_path: Path, holder: dict) -> None:
         server = uvicorn.Server(uvicorn.Config(create_server(app), host=cfg.web_host, port=cfg.web_port,
                                                log_level="warning"))
         holder["server"] = server  # (Quit works from here on, also while the cameras are still connecting)
+
+        def close_for_update() -> None:  # an update's setup program runs: close the whole program
+            holder["quit"] = True
+            server.should_exit = True
+
+        app.on_exit = close_for_update
         try:
             await app.start()
             if not server.should_exit:
                 await server.serve()
         finally:
             await app.stop()
+            if holder.get("quit") and holder.get("icon"):
+                holder["icon"].stop()  # the tray icon too, so the process ends and the update can replace it
 
     try:
         asyncio.run(run())
@@ -162,7 +170,8 @@ def main() -> int:
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit TrackXen", quit_app),
     )
-    pystray.Icon(APP, _icon_image(), f"{APP}: {url}", menu).run()
+    icon = holder["icon"] = pystray.Icon(APP, _icon_image(), f"{APP}: {url}", menu)
+    icon.run()
     engine.join(timeout=15)
     return 0
 

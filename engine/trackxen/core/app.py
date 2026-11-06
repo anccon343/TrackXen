@@ -9,6 +9,7 @@ import secrets
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from trackxen.control.camera import CameraLink, CameraLinkConfig
@@ -20,6 +21,7 @@ from trackxen.core.performance import PRESETS, Preset
 from trackxen.core.session import CameraSession
 from trackxen.core.stats import Counters, Limits, Problem, StatsCollector, StatsLog, SystemSampler
 from trackxen.core.tracking_settings import View
+from trackxen.core.updates import Updater, UpdateError
 from trackxen.rules.audio import AudioFollowConfig
 from trackxen.vision.sources import SourceConfig
 from trackxen.vision.worker import WorkerConfig, start_worker
@@ -103,6 +105,9 @@ class App:
         self.gpu_libs: GpuLibraries | None = None
         if getattr(sys, "frozen", False) or os.environ.get("TRACKXEN_GPU_LIBS"):
             self.gpu_libs = GpuLibraries(log=lambda level, message: self.log.event("gpu", message, level=level))
+        # updates from GitHub (Settings → System); on_exit closes the whole program (set by desktop.py)
+        self.updater = Updater(self.data, log=lambda level, message: self.log.event("update", message, level=level))
+        self.on_exit: Callable[[], None] | None = None
         self.listeners: set = set()  # callables notified on new previews (web sockets)
         # counts applied settings, so a page holding older ones can be told; from a random start, so a page
         # loaded before a restart doesn't match again
@@ -277,8 +282,30 @@ class App:
         self._jobs.add(task)
         task.add_done_callback(self._jobs.discard)
 
+    async def install_update(self) -> dict:
+        """Run the downloaded update's setup program and close TrackXen for it (stopping every camera on the
+        way out); the setup program starts TrackXen again. Not while a camera is live."""
+        live = [s.cfg.name for s in self.sessions.values() if s.on_air]
+        if live:
+            return {"ok": False, "error": f"{', '.join(live)} on air: install the update after the service."}
+        try:
+            command = self.updater.setup_command()
+        except UpdateError as e:
+            return {"ok": False, "error": str(e)}
+        if self.on_exit is None:
+            return {"ok": False, "error": "This copy of TrackXen can't close itself for the update: quit it and run "
+                                          f"{command[0]} yourself."}
+        try:
+            self.updater.launch(command)
+        except OSError as e:
+            return {"ok": False, "error": f"Couldn't start the setup program: {e}"}
+        self.log.event("app", "closing for the update")
+        asyncio.get_running_loop().call_later(0.5, self.on_exit)  # (after the answer has gone back to the page)
+        return {"ok": True}
+
     async def stop(self) -> None:
         self._stopping = True
+        self.updater.stop()
         if self.gpu_libs:
             self.gpu_libs.stop()
         for task in [*self._tasks, *self._jobs]:

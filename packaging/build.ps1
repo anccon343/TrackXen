@@ -1,6 +1,8 @@
 # Build the TrackXen installer:  powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 #   1. the web UI (npm run build)   2. TrackXen.exe with PyInstaller (dist\TrackXen)
 #   3. the setup program with Inno Setup 6, if it is installed (installer-output\)
+#   -Version 0.1.0.12: the release build on GitHub (.github/workflows/release.yml) passes its build number
+param([string]$Version = "")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -35,6 +37,6 @@ if (-not $iscc) {
     Write-Host "dist\TrackXen already works as a portable copy: start dist\TrackXen\TrackXen.exe."
     exit 0
 }
-& $iscc packaging\trackxen.iss
+if ($Version) { & $iscc "/DAppVersion=$Version" packaging\trackxen.iss } else { & $iscc packaging\trackxen.iss }
 if ($LASTEXITCODE) { throw "Inno Setup failed" }
 Write-Host "Done: installer-output\"

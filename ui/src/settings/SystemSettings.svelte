@@ -5,6 +5,7 @@
   import { live, postJSON } from "../lib/live.svelte";
   import { settings } from "../lib/config.svelte";
   import { ui } from "../lib/ui.svelte";
+  import UpdateSettings from "./UpdateSettings.svelte";
 
   let newPin = $state("");
   let repeatPin = $state("");
@@ -60,7 +61,6 @@
 
 <h2 class="section">TrackXen</h2>
 <div class="kv">
-  <div><span>Version</span><span>0.1.0 (development)</span></div>
   <div><span>Vision engine</span><span>{live.status?.engine || "–"}</span></div>
   <div><span>Vision worker</span><span>{live.status?.worker_alive ? "running" : "not running"}</span></div>
   {#if live.status?.gpu_libs && live.status.gpu_libs.state !== "not_needed"}
@@ -73,6 +73,7 @@
   {/if}
   <div><span>Log file</span><span class="path">{live.status?.log_file ?? "–"}</span></div>
 </div>
+<UpdateSettings />
 <h2 class="section">Show file</h2>
 <p class="dim">The whole setup in one file: cameras, App Settings, preset links, vMix and audio-follow. Keep one per
   venue and load it there. Registered faces themselves are not in it (they stay on this PC).</p>

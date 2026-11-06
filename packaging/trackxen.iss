@@ -14,7 +14,10 @@
 #define AppName "TrackXen"
 ; The version is also in pyproject.toml, engine/trackxen/__init__.py, packaging/version.txt,
 ; ui/package.json and a few other files; tests/test_tools.py checks that they all agree.
+; The release build on GitHub adds its build number: ISCC /DAppVersion=0.1.0.<n> (build.ps1 -Version).
+#ifndef AppVersion
 #define AppVersion "0.1.0"
+#endif
 
 [Setup]
 AppId={{7C1B4D2E-5A0F-4C8B-9E3D-2F6A8B1C4D70}
@@ -66,6 +69,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""TrackXen"" dir=in action=allow program=""{app}\TrackXen.exe"" enable=yes profile=private,domain"; \
   Flags: runhidden; StatusMsg: "Allowing tablets and the cameras' FreeD data through the Windows Firewall..."; Check: IsAdminInstallMode
 Filename: "{app}\TrackXen.exe"; Description: "Start TrackXen now"; Flags: nowait postinstall skipifsilent
+; an update started from TrackXen (Settings → System → Updates: /update=1, silent): start it again
+Filename: "{app}\TrackXen.exe"; Parameters: "--no-browser"; Flags: nowait; Check: IsUpdate
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM TrackXen.exe"; Flags: runhidden; RunOnceId: "StopApp"
@@ -95,6 +100,11 @@ begin
     for I := 0 to GetArrayLength(Names) - 1 do
       if Pos('NVIDIA', Uppercase(DriverDesc(Names[I]))) > 0 then
         Result := True;
+end;
+
+function IsUpdate(): Boolean;
+begin
+  Result := ExpandConstant('{param:update|0}') = '1';
 end;
 
 function InitializeSetup(): Boolean;

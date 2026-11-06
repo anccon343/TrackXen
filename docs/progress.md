@@ -14,7 +14,7 @@ open http://127.0.0.1:8090                       (the UI; /test is the simple Ph
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
 .venv\Scripts\python tools\motion_bench.py --check   (pan/tilt smoothness in virtual time, about 10 s)
-.venv\Scripts\python -m pytest                  (470 tests)
+.venv\Scripts\python -m pytest                  (480 tests)
 .venv\Scripts\python -m ruff check engine tools tests   (lint)
 cd ui && npm run build                           (rebuild the UI after changes)
 ```
@@ -1049,6 +1049,35 @@ Every page was checked in the browser with the simulator at 1920x1080, 1366x768,
 - **Settings:** fields are at most 1100 px wide on large screens. Pages without an Apply button say how
   their changes take effect. Help texts named a "Settings → Connections" page that is called
   "vMix & mixer". The performance badge in the top bar opens Settings → Performance.
+
+## 2026-11-06: grouped Setting Wizard, updates from GitHub
+
+**Setting Wizard.** The ten pages are no longer only in Canon's order:
+- Four groups in the list: Picture area (Pan/Tilt Operation Control, Initial Position), Choosing the
+  target (Auto Select, Exclusion Areas, Halting Areas), Framing and movement (Composition, Priority
+  Display / Fixed Viewing Angle Areas, Auto Framing), Extras (Registered Faces, Camera Preset Link).
+- Main steps (1, 2, 3, 6 in the new order) and optional ones: **Next** goes through the main steps
+  only, unless "Optional steps too" is ticked (kept per browser). The list always shows all ten.
+- A mark per page: ✓ in use (a range, an area, Auto Select, Auto Framing, faces, a preset link), ! for
+  a main step not done (no initial position captured).
+- Texts that named a page by its number ("wizard step 4") now name it.
+
+**Updates from GitHub** (`core/updates.py`, Settings → System → Updates; user-guide section 1):
+- `.github/workflows/release.yml` builds the setup program on `windows-latest` for every push to
+  `main` that changes the program (docs-only pushes don't): models exported once and cached, the
+  tests run, `packaging/build.ps1 -Version 0.1.0.<n>`, and a release `build-<n>` with the setup
+  program and its `.sha256`. The build number goes into the program as `trackxen/_build.py`.
+- The app asks GitHub's API for the latest release with a fine-grained read-only token (the
+  repository is private), kept in `update.json` like the PIN in `access.json`, never in an answer
+  or the log. It downloads the setup program, checks its SHA-256 against the release's file, runs it
+  silently with `/update=1`, and closes itself the normal way (cameras stopped, worker ended); the
+  setup program closes what still runs, installs, and starts TrackXen again (`IsUpdate` in
+  `trackxen.iss`).
+- Refused while a camera is on air, and in a development copy (it can check and download there).
+- Tests: `tests/test_updates.py` (token kept apart, release parsing and build comparison, failures
+  explained, checksum mismatch rejected, installed-only, on-air refusal, launch then close).
+- Not tried here: a real release build on GitHub and an install on Windows (this machine is Linux);
+  the first push to `main` runs the workflow.
 
 ## Audits
 
