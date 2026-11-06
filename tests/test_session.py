@@ -529,7 +529,7 @@ def test_motion_starts_from_standstill_after_the_watchdog_stop():
     s.tick(now + 0.52)
     s.video_resumed()
     s.on_tracks(message([track(7, 1700)]))
-    s.tick(now + 0.6)
+    s.tick(now + 0.54)  # (well inside the 0.6 s a sighting counts: the sighting is about `now`)
     assert 0 < s.debug["velocity"][0] < 2  # ramps up again from 0
 
 

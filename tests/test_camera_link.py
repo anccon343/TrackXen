@@ -93,7 +93,8 @@ def test_freed_feeds_the_history_and_pose_at_interpolates():
             await asyncio.sleep(0.2)
             hist = list(link.history)
             assert [p.t for p in hist] == sorted(p.t for p in hist)
-            a, b = next((a, b) for a, b in zip(hist, hist[1:]) if b.pan > a.pan + 0.05)  # while turning
+            # while turning (two positions read in one tick of Windows' 15.6 ms clock have the same time)
+            a, b = next((a, b) for a, b in zip(hist, hist[1:]) if b.pan > a.pan + 0.05 and b.t > a.t)
             mid = link.pose_at((a.t + b.t) / 2)
             assert mid.pan == pytest.approx((a.pan + b.pan) / 2) and mid.t == pytest.approx((a.t + b.t) / 2)
             assert link.pose_at(hist[0].t - 10).pan == hist[0].pan  # older than the history: the oldest

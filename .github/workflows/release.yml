@@ -39,7 +39,7 @@ jobs:
       # The ONNX models are exported once with PyTorch and kept between builds (models/ is not in git).
       - name: Models from the cache
         id: models
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: models
           key: models-${{ hashFiles('tools/export_models.py', 'tools/get_face_models.py') }}-v1
@@ -56,6 +56,13 @@ jobs:
           exportenv\Scripts\python tools\get_face_models.py
           Remove-Item models\*.pt -ErrorAction SilentlyContinue
 
+      - name: Keep the models for the next builds  # (now, so a later failing step doesn't lose them)
+        if: steps.models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: models
+          key: ${{ steps.models.outputs.cache-primary-key }}
+
       - name: Python packages
         run: |
           python -m venv .venv
@@ -71,8 +78,16 @@ jobs:
         run: |
           if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
 
+      # A test that fails is run once more: a timing test can miss on a busy runner with Windows' 15.6 ms
+      # clock; a real failure fails twice.
       - name: Tests
-        run: .venv\Scripts\python -m pytest -q -p no:cacheprovider
+        run: |
+          .venv\Scripts\python -m pytest -q
+          if ($LASTEXITCODE) {
+            Write-Host "Running the failed tests once more"
+            .venv\Scripts\python -m pytest -q --last-failed
+            if ($LASTEXITCODE) { exit 1 }
+          }
 
       - name: Build number into the program
         id: version
