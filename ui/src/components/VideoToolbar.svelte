@@ -17,7 +17,7 @@
     </select></label>
   <span class="grow"></span>
   {#if camera}
-    <button disabled={!slot?.initial.set} title={slot?.initial.set ? `${camera.name}: go to the initial position` : "No initial position captured yet (wizard step 2)"}
+    <button disabled={!slot?.initial.set} title={slot?.initial.set ? `${camera.name}: go to the initial position` : "No initial position captured yet (Setting Wizard → Initial Position)"}
             onclick={() => slots.command({ type: "view", what: "initial" }, false)}>View Initial Position</button>
   {/if}
 </div>

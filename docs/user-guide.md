@@ -30,6 +30,28 @@ says so: press it again.
   card (about 1.5 GB, once per PC; the welcome page shows the progress). Then it prepares the
   graphics engine for the card (2-10 minutes). TrackXen already works meanwhile, more slowly.
 
+### Updates from GitHub
+
+Every push to `main` on GitHub builds a new setup program there (GitHub Actions, about 20-40 minutes)
+and publishes it as a release named after its build number. The installed TrackXen installs it from
+**Settings → System → Updates**:
+
+1. **Once per PC, an access token** (the repository is private): on GitHub, your picture → Settings
+   → Developer settings → Fine-grained tokens → Generate new token. Repository access: **Only select
+   repositories → TrackXen**; Permissions: **Contents: Read-only**; pick an expiry date. Paste it in
+   **GitHub access token** and press **Save token**. It is kept on this PC in
+   `%APPDATA%\TrackXen\update.json`, never in the settings or a show file. Make a new one when it
+   expires (TrackXen then says "GitHub refused the access token").
+2. **Check for updates** shows whether GitHub has a newer build than this one, with its notes.
+3. **Download** fetches the setup program (about 600 MB) and checks it against the checksum published
+   with it; a file that doesn't match is not used.
+4. **Install now… → Stop TrackXen and install:** TrackXen closes (every camera stops), the setup
+   program installs the new version and starts TrackXen again, in about a minute. Reload the page
+   then. Not while a camera is live: TrackXen refuses while vMix (or the On Air switch) has one on air.
+   An install "for all users" makes Windows ask to allow the setup program.
+
+A version built by hand (`packaging\build.ps1`) counts as build 0, so any GitHub build is newer.
+
 ## 2. First start: the welcome page
 
 1. **This PC:** check that the graphics card is found. "Test this PC's speed" measures it and
@@ -90,7 +112,7 @@ their position 20 times a second over VISCA.
   (faces, connections, a vMix input, Apply in Settings) also keep the changes made so far.
 - The **PTZ** tab moves the camera by hand; its moves start and stop softly by Pan/Tilt Smoothness
   (section 4). Moving a camera by hand (here, in vMix, with a joystick) stops tracking, unless
-  "Restart Tracking After Manual Operation" is on (wizard step 4).
+  "Restart Tracking After Manual Operation" is on (wizard: Tracking Target Auto Select).
 
 ## 4. Setting up a venue: the Setting Wizard
 
@@ -98,29 +120,42 @@ Press **Setting Wizard** (or **Settings pages** to jump to one page). Each page 
 with pan, tilt and zoom sliders around it. The frames you draw stay fixed to the room, even when
 the camera moves.
 
+The ten pages are Canon's, in four groups. **Next** goes through the main steps (1, 2, 3 and 6),
+which are enough for most venues; tick **Optional steps too** to go through all ten. The list on the
+left always shows every page: ✓ = in use, ! = a main step still to do (the initial position).
+
+**Picture area**
 1. **Pan/Tilt Operation Control:** stop tilting (Fix Tilt), and the **shooting range**: move the
    camera to each limit and press Capture.
 2. **Initial Position:** the view tracking starts from; when the person is lost, keep the view or go
    back here after a few seconds.
-3. **Priority Display Area** (always kept in the picture, for example a screen) or **Fixed Viewing
-   Angle Areas** (a podium: while the person stands inside, the shot stays still).
-4. **Auto Select:** someone standing in the auto select area for the start time becomes the target.
-5. **Composition:** where the head sits in the picture (drag the silhouette), how big the person is,
+
+**Choosing the target**
+3. **Tracking Target Auto Select:** someone standing in the auto select area for the start time
+   becomes the target. Also "Restart Tracking After Manual Operation".
+4. **Auto Select Exclusion Areas** (optional): posters, photos and screens with people on them are
+   never picked.
+5. **Tracking Halting Areas** (optional): for example the seats of people waiting their turn: someone
+   walking in there is let go, and nobody there is picked.
+
+**Framing and movement**
+6. **Composition:** where the head sits in the picture (drag the silhouette), how big the person is,
    the quiet zone (Pan/Tilt Halting Area), sensitivity, **Pan/Tilt Smoothness** (below), and the
-   calmer motion while live.
-6. **Exclusion Areas:** posters, photos and screens with people on them are never picked.
-7. **Tracking Halting Areas:** for example the seats of people waiting their turn: someone walking in
-   there is let go, and nobody there is picked.
-8. **Auto Framing:** Multi-Person (frame the speaker with the people next to them), Face Direction
-   (leave space in front of the face), Sit/Stand (closer when the person sits).
-9. **Registered Face Tracking:** register up to 7 faces per camera; only those people are followed.
-   Ask people first; the data stays on this PC.
-10. **Camera Preset Link:** what tracking does after a camera preset is recalled.
+   calmer motion while live (On-Air Motion).
+7. **Priority Display Area** (optional; always kept in the picture, for example a screen) or **Fixed
+   Viewing Angle Areas** (a podium: while the person stands inside, the shot stays still).
+8. **Auto Framing** (optional): Multi-Person (frame the speaker with the people next to them), Face
+   Direction (leave space in front of the face), Sit/Stand (closer when the person sits).
+
+**Extras**
+9. **Registered Face Tracking** (optional): register up to 7 faces per camera; only those people are
+   followed. Ask people first; the data stays on this PC.
+10. **Camera Preset Link** (optional): what tracking does after a camera preset is recalled.
 
 ### Pan/Tilt Smoothness (beyond Canon)
 
-**Composition → Pan/Tilt Smoothness**, 1-10 per App Settings, default 5: on wizard page 5 and on the
-Cameras page under Tracking Sensitivity.
+**Composition → Pan/Tilt Smoothness**, 1-10 per App Settings, default 5: on the wizard's Composition
+page and on the Cameras page under Tracking Sensitivity.
 
 - **Higher is softer:** starts, stops and speed changes are gentler. The camera follows the person's
   walking speed smoothed over a longer time and keeps a speed step longer before it changes to the
@@ -208,7 +243,7 @@ higher in the list wins when two registered people appear.
 
 - **Settings → vMix & mixer:** the vMix PC's address (127.0.0.1 if vMix runs on this PC), then pick
   which vMix input shows each camera (TrackXen suggests the match). While a camera is live it moves
-  more slowly and calmly; set how calm on wizard page 5. The **On Air** switch (Auto / On / Off) on the
+  more slowly and calmly; set how calm on the wizard's Composition page (On-Air Motion). The **On Air** switch (Auto / On / Off) on the
   tracking panel does the same by hand.
 - **Mixer:** the MR18 / X Air address (or Find mixers).
 - **Settings → Audio follow:** switch on the microphones to follow. For each: who uses it (a

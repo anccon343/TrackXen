@@ -8,7 +8,8 @@
   import FacesStep from "./FacesStep.svelte";
   import OnAirControls from "./OnAirControls.svelte";
 
-  // The ten settings pages of Canon's wizard (docs/reference.md section 3), one at a time.
+  // The ten settings pages of Canon's wizard (docs/reference.md section 3), one at a time, by Canon's step
+  // number (the wizard shows them in its own order and groups).
   let { step, slot, camera }: { step: number; slot: AppSettings; camera: CameraStatus } = $props();
   const edges = [["top", "Top edge"], ["bottom", "Bottom edge"], ["left", "Left edge"], ["right", "Right edge"]] as const;
   const range = $derived(slot.shooting_range);
@@ -122,7 +123,7 @@
 {:else if step === 9}
   <FacesStep {slot} {camera} />
 {:else if step === 10}
-  <p class="help">What tracking does after a camera preset is recalled (shared by all five App Settings). On: tracking starts with the chosen App Settings once the camera is there. Off: tracking stops. Blank: like any manual operation (step 4).</p>
+  <p class="help">What tracking does after a camera preset is recalled (shared by all five App Settings). On: tracking starts with the chosen App Settings once the camera is there. Off: tracking stops. Blank: like any manual operation (Tracking Target Auto Select page).</p>
   <table>
     <thead><tr><th>Preset</th><th>Auto Tracking</th><th>App Settings</th><th></th></tr></thead>
     <tbody>

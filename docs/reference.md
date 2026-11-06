@@ -67,6 +67,8 @@ Rules between areas:
 ## 3. All settings: the 10 wizard steps
 
 The settings wizard walks through steps 1–10. Every step is also its own page in the Settings Menu.
+(TrackXen shows these pages in four groups and its own order, with optional steps marked: see
+user-guide.md section 4. The step numbers below are Canon's.)
 
 ### Step 1: Pan/Tilt Operation Control
 - **Fix Tilt Operation** (on/off): no tilting while tracking. It also disables the top/bottom range

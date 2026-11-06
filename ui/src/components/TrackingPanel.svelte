@@ -45,7 +45,7 @@
     <button class:on={camera.on_air_manual === true} onclick={() => live.send({ type: "on_air", camera: camera.id, on: true })}>On</button>
     <button class:on={camera.on_air_manual === false} onclick={() => live.send({ type: "on_air", camera: camera.id, on: false })}>Off</button>
   </div>
-  <p class="hint">While live the camera moves calmly (wizard step 5: On-Air Motion). Auto follows vMix.</p>
+  <p class="hint">While live the camera moves calmly (Setting Wizard → Composition: On-Air Motion). Auto follows vMix.</p>
   <div class="row"><span>Audio follow</span>
     <Toggle checked={camera.audio_follow} onchange={(on) => live.send({ type: "audio_follow", camera: camera.id, on })} /></div>
   {#if camera.cue}<p class="hint">Answering {camera.cue.label}…</p>{/if}

@@ -36,7 +36,7 @@
     {/each}
   </div>
   <p class="hint">Moving the camera here while tracking counts as a manual operation: tracking stops unless
-    "Restart Tracking After Manual Operation" is on (wizard step 4). Presets follow the Camera Preset Link.</p>
+    "Restart Tracking After Manual Operation" is on (Setting Wizard → Tracking Target Auto Select). Presets follow the Camera Preset Link.</p>
 </div>
 
 <style>
