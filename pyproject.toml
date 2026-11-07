@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trackxen"
 version = "0.1.0"
-description = "Automatic speaker tracking for BirdDog P400 PTZ cameras"
+description = "Automatic speaker tracking for PTZ cameras: up to four cameras, one PC, run from any browser"
 requires-python = ">=3.12"
 license = { text = "AGPL-3.0-or-later" }
 # what the app needs at run time (exact versions: requirements-lock.txt)

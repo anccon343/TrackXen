@@ -3,7 +3,7 @@
   import Sparkline from "../ui/Sparkline.svelte";
   import LogViewer from "./LogViewer.svelte";
 
-  // Statistics like vMix's window: every number is measured (see docs/research.md section 3.5).
+  // Statistics like vMix's window: every number is measured (see docs/development/research.md section 3.5).
   let sample = $derived(live.status?.stats as Sample | undefined);
   let cameras = $derived(live.status?.cameras ?? []);
   let gpu = $derived(sample?.gpus?.[0]);

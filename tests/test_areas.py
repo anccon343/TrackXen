@@ -113,5 +113,5 @@ def test_settings_patch():
     assert s.sensitivity == 3 and s.auto_select.start_time == 1.5 and s.halting_areas[3].enabled
     with pytest.raises(ValueError):
         merge(AppSettings().model_dump(), {"sensitivty": 3})
-    with pytest.raises(ValueError):  # out of Canon's range
+    with pytest.raises(ValueError):  # out of range
         AppSettings.model_validate({**AppSettings().model_dump(), "sensitivity": 11})

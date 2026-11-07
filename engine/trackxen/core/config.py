@@ -60,7 +60,7 @@ class LensConfig(FiniteModel):
 
 
 class FaceRef(FiniteModel):
-    """A registered face as one camera uses it (Canon step 9): on or off; the list order is the priority."""
+    """A registered face as one camera uses it (Registered Face Tracking): on or off; the list order is the priority."""
 
     id: str
     enabled: bool = True
@@ -91,7 +91,7 @@ class CameraConfig(FiniteModel):
     motion: Motion = Field(default_factory=Motion)
     lost_after: float = 1.5  # seconds without the target before it counts as lost
     refind_window: float = 10.0  # seconds to keep looking for the lost target where it was last seen
-    slots: list[AppSettings] = Field(default_factory=default_slots)  # Canon's 5 App Settings
+    slots: list[AppSettings] = Field(default_factory=default_slots)  # the 5 App Settings
     active_slot: int = Field(0, ge=0, lt=SLOTS)
     preset_links: dict[int, PresetLink] = Field(default_factory=dict)  # preset number (1..) -> behaviour
     faces: list[FaceRef] = Field(default_factory=list, max_length=7)  # registered faces, highest priority first
@@ -108,7 +108,7 @@ class CameraConfig(FiniteModel):
     @field_validator("slots")
     @classmethod
     def _five(cls, v: list[AppSettings]) -> list[AppSettings]:
-        """Always Canon's 5 App Settings (a show file with fewer would stop the camera from starting)."""
+        """Always 5 App Settings (a show file with fewer would stop the camera from starting)."""
         return (v + default_slots()[len(v):])[:SLOTS]
 
     @property

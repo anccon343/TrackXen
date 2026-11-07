@@ -1,6 +1,6 @@
 """One camera's tracking: who the target is, and what the camera should do now.
 
-Statuses (Canon's, plus no_video):
+Statuses:
 - idle: Auto Tracking is off
 - no_target: on, Auto Select off, nobody picked yet (the operator clicks a person)
 - searching: on, Auto Select is looking for someone
@@ -209,7 +209,7 @@ class CameraSession:
         return self.cfg.slots[i]
 
     def initialize(self, scope: str) -> None:
-        """Canon's Initialization: the selected App Settings, or all of them and the preset links."""
+        """Initialization: the selected App Settings, or all of them and the preset links."""
         if scope == "all":
             self.cfg.slots = default_slots()
             self.cfg.preset_links = {}
@@ -264,7 +264,7 @@ class CameraSession:
         return area
 
     def capture(self, what: str, index: int = 0) -> None:
-        """Canon's Capture: the current view becomes the initial position, a shooting range edge,
+        """Capture: the current view becomes the initial position, a shooting range edge,
         or the angle an area shows (for a fixed viewing angle area: the shot it holds)."""
         pose = self.require_pose()
         slot = self.slot
@@ -311,7 +311,7 @@ class CameraSession:
         if not on:
             self.halt()
         elif start_at_initial and self.target_id is None and self.slot.initial.set:
-            self.go_to(self.slot.initial, "initial position")  # Canon: the view tracking starts from
+            self.go_to(self.slot.initial, "initial position")  # the view tracking starts from
 
     def select_at(self, x: float, y: float) -> tuple[int | None, str]:
         """Lock onto the person at a point of the picture (0..1 coordinates)."""
@@ -350,7 +350,7 @@ class CameraSession:
 
     def manual(self, pan: int, tilt: int, zoom: int, hold: float = 0.3) -> None:
         """Joystick/buttons in this app, Companion and the API: they override tracking while held. With
-        "Restart Tracking After Manual Operation" off, a press turns Auto Tracking off (Canon's rule).
+        "Restart Tracking After Manual Operation" off, a press turns Auto Tracking off.
 
         The page repeats the command while a button is held; if it stops repeating (released,
         or the connection dropped), tick() stops the camera when the hold runs out. Pan and tilt speed
@@ -387,14 +387,14 @@ class CameraSession:
         self._send(0, 0, 0)
 
     def click_center(self, x: float, y: float) -> None:
-        """Canon's Click Centering: turn so this point of the picture (0..1) comes to the middle."""
+        """Click Centering: turn so this point of the picture (0..1) comes to the middle."""
         _finite(x, y)
         pose = self.require_pose()
         pan, tilt = view_to_room(x, y, pose, self.lens)
         self.go_to_manually(View(set=True, pan=pan, tilt=tilt, zoom=pose.zoom), "click centering")
 
     def show(self, what: str, index: int = 0) -> None:
-        """Canon's View buttons: show the initial position, a shooting range edge or an area."""
+        """The View buttons: show the initial position, a shooting range edge or an area."""
         slot = self.slot
         if what == "initial":
             if not slot.initial.set:
@@ -533,7 +533,7 @@ class CameraSession:
         if self.cue and self._answer_cue(slot, now):
             looking = False
         if looking and slot.registered_faces:
-            # Canon: only registered faces (switched on) are picked, the highest priority first, at once
+            # only registered faces (switched on) are picked, the highest priority first, at once
             self.selector.reset()
             pick = self._registered_pick(slot)
             if pick is not None and (not self._is_target(pick[0]) or pick[1] != self.target_face):

@@ -2,7 +2,7 @@
 
 Written 2026-10-31.
 
-**Goal:** rebuild Canon's Auto Tracking App (see `reference.md`) for 4 × BirdDog P400 on one Windows PC
+**Goal:** automatic speaker tracking (see `../features.md`) for 4 × BirdDog P400 on one Windows PC
 with an NVIDIA GPU, working alongside vMix.
 
 This is research, not a plan. Nothing is decided until you sign off. Numbers marked "check" still need
@@ -33,7 +33,7 @@ to be confirmed on the real cameras or in the source.
 |---|---|---|
 | Video in | NDI (NDI SDK 6) by default, or an HDMI/SDI capture card, chosen per camera; detect on a downscaled frame (~960 px wide) | On the network the P400 only sends Full NDI; capture cards cover SDI/HDMI setups. Control stays on IP either way |
 | Moving the camera | **VISCA over IP** (UDP port 52381): speed-based pan/tilt/zoom plus absolute moves | Documented, low latency, separate from the video link, the industry standard |
-| Knowing where the camera points | **FreeD** output from each P400 to our PC (pan/tilt/zoom/focus/iris every frame); VISCA position inquiry as backup | Needed for Canon-style areas fixed to the room, for moving-camera tracking, and to spot manual moves and preset recalls |
+| Knowing where the camera points | **FreeD** output from each P400 to our PC (pan/tilt/zoom/focus/iris every frame); VISCA position inquiry as backup | Needed for areas fixed to the room, for moving-camera tracking, and to spot manual moves and preset recalls |
 | Camera setup | BirdDog REST API 2.0 (HTTP, port 8080) | Speed limits, presets 1–9, exposure, encode and tally settings. It has **no movement commands** |
 | Person detector | **Ultralytics YOLO26** (AGPL-3.0, fine for this non-commercial project), run as TensorRT FP16; RF-DETR as the alternative to benchmark | Top-tier speed and accuracy; one library covers detection, pose, tracking, fine-tuning and TensorRT export |
 | Tracker | Ultralytics' built-in BoT-SORT (optional ReID) or ByteTrack, with camera motion taken from FreeD | Comes with YOLO26; FreeD solves most of the moving-camera problem |
@@ -41,7 +41,7 @@ to be confirmed on the real cameras or in the source.
 | Faces | YuNet (detect, 5 landmarks) + SFace (recognise), both from OpenCV Zoo | Commercially usable. InsightFace's ArcFace is more accurate but needs a paid licence for commercial use |
 | Body pose | YOLO26-pose (same library); RTMPose / RTMO as alternatives | Sit/stand, raised hands, body direction |
 | Inference | ONNX Runtime GPU with the TensorRT provider (FP16, engine cache); native TensorRT if we need the extra speed | Easiest path on Windows with NVIDIA |
-| App structure | **Python engine** (one worker per camera, shared GPU) plus a **browser-based UI** (TypeScript), optionally in its own desktop window | Best ML tools, fastest to tune; Canon's app is browser-based too, and it works on tablets |
+| App structure | **Python engine** (one worker per camera, shared GPU) plus a **browser-based UI** (TypeScript), optionally in its own desktop window | Best ML tools, fastest to tune; a browser-based UI also works on tablets |
 | vMix | TCP API (port 8099): tally + activator subscriptions | Tally-aware camera behaviour |
 | Mic levels | Straight from your X Air / Midas MR18 mixers over the network (OSC, UDP 10024) | Lets the active mic decide who a camera should be on |
 | On-air behaviour | vMix tally switches each camera to a slower, smoother motion profile while it's on Program | Tracking corrections don't show as jerky moves on the live picture |
@@ -117,7 +117,7 @@ to be confirmed on the real cameras or in the source.
 - **Units:** angles are fixed-point degrees (1/32768° in the spec). Zoom and focus scaling differs by
   vendor, so we calibrate zoom counts against the real field of view.
 - **What it gives us:**
-  - Areas stored as room angles (Canon behaviour).
+  - Areas stored as room angles.
   - Exact camera position for click-to-centre and for tracking while the camera moves.
   - Knowing when someone else (vMix, a joystick) moved the camera.
   - Knowing when a preset was recalled.
@@ -356,7 +356,7 @@ for panels where several people share one mic.
 
 | Option | Engine | UI | Pros | Cons |
 |---|---|---|---|---|
-| **A, recommended** | Python 3.12+: NDI via **cyndilib** (MIT), ONNX Runtime/TensorRT, OpenCV, asyncio UDP for VISCA/FreeD, FastAPI + WebSocket | Web UI in TypeScript (React or Svelte) in the Canon style; open in a browser or wrap in a desktop window (Tauri 2 / WebView2) | Fastest to build and tune, best ML tools, works from tablets, easy API for vMix/Companion | Python needs discipline for real-time work: one process per camera, nothing heavy in the control loop |
+| **A, recommended** | Python 3.12+: NDI via **cyndilib** (MIT), ONNX Runtime/TensorRT, OpenCV, asyncio UDP for VISCA/FreeD, FastAPI + WebSocket | Web UI in TypeScript (React or Svelte); open in a browser or wrap in a desktop window (Tauri 2 / WebView2) | Fastest to build and tune, best ML tools, works from tablets, easy API for vMix/Companion | Python needs discipline for real-time work: one process per camera, nothing heavy in the control loop |
 | B | C++ or Rust engine: native NDI SDK and TensorRT | Qt/QML | Maximum performance, lowest latency | Much slower to develop; ML experiments are harder |
 | C | C#/.NET 8: NDI .NET, ONNX Runtime C# | WPF / WinUI 3 / Avalonia | Strong Windows desktop UI | Smaller ML ecosystem; Windows only |
 
@@ -460,7 +460,6 @@ it means.
 
 | Product | Works with P400? | Notes |
 |---|---|---|
-| Canon RA-AT001 | No, Canon cameras only | Our feature reference |
 | Panasonic AW-SF100 / SF200 | No, Panasonic only | Motion + optional face recognition, fully offline, server version for several cameras, from ~$1,575 |
 | BirdDog X1 / X1 Ultra | No, built into those cameras | AI tracking and auto framing in the camera |
 | **TrackPilot** (free, Windows, v1.7.2, Oct 2026) | Probably (NDI + VISCA, many brands) | Click to track, auto-zoom, group mode, profile per speaker, tracking and no-go areas, joystick, Companion, several cameras |
@@ -468,7 +467,7 @@ it means.
 
 **Honest take:** TrackPilot is free and covers part of this already. It's worth testing on one P400 as
 a baseline. What our version adds:
-- Canon's full feature set: area rules, 5 profiles per camera, setup wizard, preset link,
+- The full feature set: area rules, 5 profiles per camera, setup wizard, preset link,
   registered-face priority, multi-person framing, face direction, sit/stand.
 - Exact FreeD positions.
 - vMix-aware behaviour.
@@ -476,7 +475,7 @@ a baseline. What our version adds:
 
 ---
 
-## 5. Nice-to-have features (beyond Canon)
+## 5. Nice-to-have features
 Effort: easy / medium / hard.
 
 **Production integration**
@@ -509,7 +508,7 @@ Effort: easy / medium / hard.
 **Operator tools**
 
 12. **Joystick/gamepad and BirdDog keyboard override** (easy/medium): tracking pauses on manual moves and
-    resumes afterwards (Canon does this).
+    resumes afterwards.
 13. **Stream Deck / Bitfocus Companion** (easy over HTTP/OSC; a custom module is medium): start/stop,
     switch App Settings, pick the target.
 14. **Tablet and phone control**: comes free with a web UI.
@@ -527,7 +526,7 @@ Effort: easy / medium / hard.
 **Setup**
 
 21. **Camera auto-discovery** (easy): NDI finder plus BirdDog REST `/about`.
-22. **Guided setup wizard per camera** (medium): like Canon's, plus venue templates.
+22. **Guided setup wizard per camera** (medium): plus venue templates.
 23. **Face-data privacy tools** (easy): consent note, expiry date, one-click wipe.
 
 ---

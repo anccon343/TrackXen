@@ -92,7 +92,7 @@ Then, in a second window:
 |---|---|
 | `sim_camera.py` | A virtual P400 (VISCA, FreeD, NDI video of a stage with a walking speaker); `--ptzoptics`: behaves like a PTZOptics G2 (plain VISCA, no FreeD; with `python -m trackxen --sim --sim-ptzoptics N`) |
 | `sim_test.py` | Locks onto the speaker in TrackXen and measures framing, visibility and timing |
-| `sim_scenarios.py [names]` | Canon's tracking rules end to end: auto select, fixed / halting areas, shooting range, manual operation, preset link, multi-person, registered faces, on-air motion (`onair`, vMix tally) and audio-follow (`audio`, MR18). `onair` and `audio` also need `fake_devices.py --no-camera --vmix-input "TRACKXEN SIM 1" --cycle 8` in another window. All 10 take about 5-6 minutes |
+| `sim_scenarios.py [names]` | The tracking rules end to end: auto select, fixed / halting areas, shooting range, manual operation, preset link, multi-person, registered faces, on-air motion (`onair`, vMix tally) and audio-follow (`audio`, MR18). `onair` and `audio` also need `fake_devices.py --no-camera --vmix-input "TRACKXEN SIM 1" --cycle 8` in another window. All 10 take about 5-6 minutes |
 | `export_models.py` | Exports the YOLO26 pose models to ONNX (needs PyTorch; run in its own process) |
 | `fuse_preprocess.py` | Moves the image preparation into the exported models, so it runs on the GPU (run after exporting) |
 | `gpu_libs_manifest.py` | Lists the NVIDIA DLLs the installed app downloads on its first start (`--check` in the build) |

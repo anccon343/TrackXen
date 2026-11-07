@@ -6,10 +6,10 @@
   import InitDialog from "../tracking/InitDialog.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
-  // Canon's Tracking Execution settings column, for the selected camera. Changes are live at
-  // once and kept on disk after Save (like Canon's). Ordered for the operator: what is used during a
+  // The tracking column for the selected camera. Changes are live at once and kept on disk after
+  // Save. Ordered for the operator: what is used during a
   // service first (Auto Tracking, target, on air), the App Settings after it; Save stays in reach.
-  // The mouse mode and View Initial Position are above the pictures (VideoToolbar), as in Canon's app.
+  // The mouse mode and View Initial Position are above the pictures (VideoToolbar).
   let { camera, onsetup }: { camera: CameraStatus; onsetup: (mode: "wizard" | "pages") => void } = $props();
   $effect(() => slots.sync(camera));
   let slot = $derived(slots.camera === camera.id ? slots.slot : undefined);

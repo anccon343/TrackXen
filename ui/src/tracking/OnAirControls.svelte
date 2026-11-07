@@ -3,7 +3,7 @@
   import NumberSlider from "../ui/NumberSlider.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
-  // Beyond Canon: how this App Settings slot moves while the camera is live on Program.
+  // How this App Settings slot moves while the camera is live on Program.
   let { slot }: { slot: AppSettings } = $props();
   let oa = $derived(slot.on_air);
   const set = (values: Record<string, unknown>) => slots.patch({ on_air: values });

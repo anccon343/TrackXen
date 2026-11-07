@@ -1,7 +1,7 @@
 """Smoothness regression: the repo's closed-loop simulation (tests/test_controller.simulate) with a noisy walker.
 
 The full measurement (a fake P400/G2 with the real session, link and VISCA code, detector noise, head bob and sway)
-is described in docs/progress.md; this is its fast, deterministic core: a person who keeps walking is followed in
+is described in docs/development/progress.md; this is its fast, deterministic core: a person who keeps walking is followed in
 one movement. Before 2026-11 the camera caught up, stopped while the person walked on, and started again once the
 error had grown past the dead zone: 3-6 times in 6.5 s of walking here, at 20-70 % of the control ticks at step 0.
 """

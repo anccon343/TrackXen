@@ -1,1 +1,1 @@
-"""Canon-style tracking rules: areas, target selection, composition, auto framing."""
+"""Tracking rules: areas, target selection, composition, auto framing."""

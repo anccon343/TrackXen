@@ -1,6 +1,6 @@
 // Page-only state: the mouse mode of the pictures, the silhouette view, and short messages.
 
-/** Canon's mouse modes (dropdown at the top-left of the video). */
+/** The mouse modes (dropdown above the pictures). */
 export type MouseMode = "select" | "center" | "silhouette" | "area";
 
 export const MOUSE_MODES: { id: MouseMode; label: string }[] = [
@@ -10,7 +10,7 @@ export const MOUSE_MODES: { id: MouseMode; label: string }[] = [
   { id: "area", label: "Set Area" },
 ];
 
-/** Canon's Status badge texts (plus "No video", ours). */
+/** The Status badge texts. */
 export const STATE_TEXT: Record<string, string> = {
   idle: "Off", no_target: "No target selected", searching: "Searching", tracking: "Tracking",
   angle_fixed: "Angle Fixed", lost: "Target lost", no_video: "No video",
@@ -18,7 +18,7 @@ export const STATE_TEXT: Record<string, string> = {
 
 class UiState {
   mouseMode = $state<MouseMode>("select");
-  silhouette = $state(false); // Silhouette View (Single Target): never saved, like Canon's
+  silhouette = $state(false); // Silhouette View (Single Target): never saved
   message = $state("");
   private timer: ReturnType<typeof setTimeout> | null = null;
 

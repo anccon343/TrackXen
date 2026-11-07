@@ -14,7 +14,7 @@
 </script>
 
 <header class="top">
-  <span class="logo">Track<b>Xen</b></span>
+  <span class="logo"><span class="ball" aria-hidden="true"></span><span>Track<b>Xen</b></span></span>
   <nav>
     <button class:active={view === "cameras"} onclick={() => onview("cameras")}>Cameras</button>
     <button class:active={view === "statistics"} onclick={() => onview("statistics")}>Statistics</button>
@@ -31,7 +31,11 @@
   .top { display: flex; align-items: center; gap: 12px; padding: 0 12px; height: 48px; background: var(--rail);
          border-bottom: 1px solid var(--line); }
   .logo { font-size: 18px; letter-spacing: 0.5px; }
-  .logo b { color: var(--accent); }
+  .logo { display: inline-flex; align-items: center; gap: 8px; }
+  .logo b { color: var(--brand); }
+  /* the red ball, as in the program's icon */
+  .ball { width: 20px; height: 20px; border-radius: 50%; flex: none;
+          background: radial-gradient(circle at 32% 30%, #fff2ef 0, #ff7a69 18%, var(--brand) 55%, #6e000c 100%); }
   nav { display: flex; gap: 2px; height: 100%; }
   nav button { background: none; border: none; border-bottom: 3px solid transparent; border-radius: 0; height: 100%;
                color: var(--dim); padding: 0 14px; }

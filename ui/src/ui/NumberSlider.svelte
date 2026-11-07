@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Slider with min/max labels, − / + buttons and the value, like the Canon settings panels.
+  // Slider with min/max labels, − / + buttons and the value.
   let { value, min, max, step = 1, digits = 0, minLabel, maxLabel, disabled = false, onchange }: {
     value: number; min: number; max: number; step?: number; digits?: number;
     minLabel?: string; maxLabel?: string; disabled?: boolean; onchange: (value: number) => void;

@@ -29,7 +29,7 @@ except ImportError:  # no NVIDIA driver/library: GPU numbers are simply missing
 
 
 class SystemSampler:
-    """Measured PC load. Sources are documented in docs/research.md section 3.5:
+    """Measured PC load. Sources are documented in docs/development/research.md section 3.5:
 
     - CPU, memory, network: psutil (system-wide, and summed over the app's processes)
     - GPU load, temperature, video memory: NVIDIA NVML (sees our CUDA/TensorRT work)

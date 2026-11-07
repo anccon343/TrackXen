@@ -8,8 +8,8 @@
   import FacesStep from "./FacesStep.svelte";
   import OnAirControls from "./OnAirControls.svelte";
 
-  // The ten settings pages of Canon's wizard (docs/reference.md section 3), one at a time, by Canon's step
-  // number (the wizard shows them in its own order and groups).
+  // The ten settings pages (docs/features.md), one at a time, each by a fixed content number (the wizard
+  // decides their order, groups and numbers on screen).
   let { step, slot, camera }: { step: number; slot: AppSettings; camera: CameraStatus } = $props();
   const edges = [["top", "Top edge"], ["bottom", "Bottom edge"], ["left", "Left edge"], ["right", "Right edge"]] as const;
   const range = $derived(slot.shooting_range);

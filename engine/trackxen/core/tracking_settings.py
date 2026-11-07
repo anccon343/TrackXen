@@ -1,7 +1,7 @@
-"""Canon RA-AT001-style tracking settings ("App Settings"): 5 named slots per camera.
+"""Tracking settings ("App Settings"): 5 named slots per camera.
 
 Every area is a rectangle in room angles (pan/tilt degrees), so it stays fixed to the room
-while the camera moves. Ranges follow Canon's (docs/reference.md section 3).
+while the camera moves. Ranges: docs/features.md.
 """
 
 from __future__ import annotations
@@ -151,8 +151,8 @@ class AppSettings(FiniteModel):
     # Step 5: composition
     composition: Framing = Field(default_factory=Framing)
     halting_area: bool = True  # Pan/Tilt Halting Area on (its size is composition.dead_zone_x/y)
-    sensitivity: int = Field(7, ge=1, le=10)  # Canon "Tracking Sensitivity": higher is nimbler
-    # Beyond Canon: higher is softer starts, stops and speed changes (tracking and joystick); 1 is the liveliest
+    sensitivity: int = Field(7, ge=1, le=10)  # "Tracking Sensitivity": higher is nimbler
+    # Pan/Tilt Smoothness: higher is softer starts, stops and speed changes (tracking and joystick); 1 is the liveliest
     smoothness: int = Field(5, ge=1, le=10)
     # Steps 6 and 7
     exclusion_areas: list[Area] = Field(default_factory=_areas)
@@ -160,7 +160,7 @@ class AppSettings(FiniteModel):
     # Steps 8 and 9
     auto_framing: AutoFraming = Field(default_factory=AutoFraming)
     registered_faces: bool = False
-    # Beyond Canon: the calmer motion while live on Program
+    # On-air motion: calmer while live on Program
     on_air: OnAir = Field(default_factory=OnAir)
 
     @field_validator("fixed_areas", "exclusion_areas", "halting_areas")
@@ -178,7 +178,7 @@ class AppSettings(FiniteModel):
 
     @model_validator(mode="after")
     def _sit_stand_sets_display_size(self) -> AppSettings:
-        """Canon: Sit/Stand on turns Display Size on (with the standing size) and Auto Zoom on."""
+        """Sit/Stand on turns Display Size on (with the standing size) and Auto Zoom on."""
         af = self.auto_framing
         if af.enabled and af.sit_stand.enabled:
             self.composition.display_size = self.composition.auto_zoom = True
@@ -186,7 +186,7 @@ class AppSettings(FiniteModel):
         return self
 
     def problems(self, lens: Lens | None = None) -> list[str]:
-        """Area rules from Canon's manual, as messages for the UI (empty = consistent).
+        """The rules between areas, as messages for the UI (empty = consistent).
 
         With a lens, also checks that the priority display and auto select areas lie inside
         the initial position's view.
@@ -254,7 +254,7 @@ class PresetLink(FiniteModel):
 
 
 def sensitivity_gain(sensitivity: int) -> float:
-    """Canon's Tracking Sensitivity 1..10 as the controller's correction gain (7 -> 1.6)."""
+    """Tracking Sensitivity 1..10 as the controller's correction gain (7 -> 1.6)."""
     return 0.4 + 0.2 * (sensitivity - 1)
 
 

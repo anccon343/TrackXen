@@ -3,7 +3,7 @@
   import { slots } from "../lib/slots.svelte";
   import { MOUSE_MODES, ui } from "../lib/ui.svelte";
 
-  // Above the pictures, as in Canon's app: the mouse mode at the top left, View Initial Position at the
+  // Above the pictures: the mouse mode at the top left, View Initial Position at the
   // top right (for the selected camera).
   let { camera }: { camera: CameraStatus | undefined } = $props();
   $effect(() => slots.sync(camera));

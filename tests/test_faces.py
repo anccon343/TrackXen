@@ -51,7 +51,7 @@ def test_a_higher_priority_face_does_not_take_over():
     s.on_tracks(message([face_track(2, 960, "leader")]))
     assert s.target_id == 2
     s.on_tracks(message([face_track(2, 960, "leader"), face_track(3, 1400, "pastor")]))
-    assert s.target_id == 2  # Canon: once locked, it stays
+    assert s.target_id == 2  # once locked, it stays
 
 
 def test_lost_target_is_re_found_by_face_anywhere_in_the_picture():

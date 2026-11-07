@@ -8,7 +8,7 @@
   import ConnectionsSettings from "../settings/ConnectionsSettings.svelte";
   import AudioSettings from "../settings/AudioSettings.svelte";
 
-  // Settings in the style of the Canon camera web settings: navigation on the left, the page on
+  // Settings: navigation on the left, the page on
   // the right with green Apply and grey Clear, and a green dot on changed fields.
   const pages = [
     { id: "cameras", title: "Cameras", component: CameraSettings, applies: true },

@@ -1,4 +1,4 @@
-// The selected camera's App Settings (Canon's 5 tracking profiles), as the engine keeps them
+// The selected camera's App Settings (its 5 tracking profiles), as the engine keeps them
 // (engine/trackxen/core/tracking_settings.py). Changes go to the engine at once and are live;
 // "save" keeps them on disk.
 import { getJSON, live, type CameraStatus, type Framing, type Reply } from "./live.svelte";
@@ -21,7 +21,7 @@ export interface AppSettings {
   composition: Framing;
   halting_area: boolean;
   sensitivity: number;
-  smoothness: number; // Pan/Tilt Smoothness 1..10 (beyond Canon): higher is softer
+  smoothness: number; // Pan/Tilt Smoothness 1..10: higher is softer
   exclusion_areas: Area[];
   halting_areas: Area[];
   auto_framing: {

@@ -5,7 +5,7 @@
   import { slots } from "../lib/slots.svelte";
   import { ui } from "../lib/ui.svelte";
 
-  // Live picture with Canon-style overlays: the App Settings' areas in their colours, the
+  // Live picture with overlays: the App Settings' areas in their colours, the
   // framing point and Pan/Tilt Halting Area, the silhouette, people (the target with orange
   // corner brackets). What a click or drag does follows the mouse mode (ui.mouseMode):
   // pick a target, centre the camera there, move the silhouette, or move/resize areas.
@@ -178,7 +178,7 @@
       label(ctx, text, bx, by, isTarget ? "#d9730d" : inGroup ? "rgba(217,115,13,0.6)" : "rgba(0,0,0,0.65)", dpr);
     }
 
-    // Registration frame (Canon step 9): turns green when the face in it can be registered. In the centre,
+    // Registration frame (Registered Face Tracking): turns green when the face in it can be registered. In the centre,
     // or around the head of the person chosen by clicking them (it follows them).
     if (faces.guide === camera.id || camera.face_guide) {
       const f = camera.face_guide?.frame;
@@ -211,7 +211,7 @@
       ctx.textAlign = "start";
     }
 
-    // Canon's icon while tracking: one target or several
+    // The tracking badge: one target or several
     if (camera.state === "tracking" || camera.state === "angle_fixed") {
       const n = 1 + (camera.group?.length ?? 0);
       label(ctx, n > 1 ? `Tracking ${n} people` : "Tracking 1 person", 6 * dpr, 22 * dpr, "rgba(0,0,0,0.6)", dpr);
@@ -303,7 +303,7 @@
       if (m.includes("b")) y2 = Math.max(y1 + 0.02, y2 + dy);
       override = { kind: drag.area.kind, index: drag.area.index, rect: [x1, y1, x2, y2] };
     } else if (drag.what === "silhouette") {
-      // Canon: the display position can't be at the edges of the picture
+      // the display position can't be at the edges of the picture
       silhouetteAt = { x: Math.min(0.85, Math.max(0.15, p.x)), y: Math.min(0.7, Math.max(0.1, p.y)) };
       if (performance.now() - lastSent > 120) sendSilhouette();
     }

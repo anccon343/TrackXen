@@ -6,7 +6,7 @@
   import { ui } from "../lib/ui.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
-  // Canon's Registered Face Tracking page: 7 face slots per camera (order = priority), each on or
+  // The Registered Face Tracking page: 7 face slots per camera (order = priority), each on or
   // off, Register (a frame on the picture turns green when the face is usable) and Delete.
   let { slot, camera }: { slot: AppSettings; camera: CameraStatus } = $props();
   let refs = $derived(faces.cameras[camera.id] ?? []);

@@ -1,4 +1,4 @@
-"""End-to-end checks of the Canon tracking rules against the virtual camera.
+"""End-to-end checks of the tracking rules against the virtual camera.
 
   python tools/sim_camera.py          (window 1)
   python -m trackxen --sim            (window 2)

@@ -17,8 +17,8 @@ lab-results/
 *.onnx
 *.pt
 
-# Third-party reference material (Canon's manual and UI screenshots): keep local, never publish
-docs/canon-RA-AT001-manual.pdf
+# Third-party reference material (manuals, screenshots): keep local, never publish
+docs/*.pdf
 docs/ui-reference/
 
 # UI

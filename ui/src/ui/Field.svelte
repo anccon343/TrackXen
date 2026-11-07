@@ -2,7 +2,7 @@
   import type { Snippet } from "svelte";
 
   // A settings row: label (and allowed range) on the left, the control on the right, help below.
-  // `changed` shows the green dot used in the Canon web settings for edited, not-yet-applied values.
+  // `changed` shows a green dot for edited, not-yet-applied values.
   let { label, range, help, changed = false, children }: {
     label: string; range?: string; help?: string; changed?: boolean; children: Snippet;
   } = $props();

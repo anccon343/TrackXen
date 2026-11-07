@@ -1,7 +1,7 @@
-"""Canon's area rules: who may be auto-selected, where tracking halts or the view is fixed,
+"""Area rules: who may be auto-selected, where tracking halts or the view is fixed,
 and how the shooting range and priority display area limit where the camera points.
 
-Precedence (Canon manual): exclusion beats auto select; tracking halting beats fixed, auto
+Precedence: exclusion beats auto select; tracking halting beats fixed, auto
 select and exclusion; shooting range and priority display area beat auto framing.
 """
 
@@ -103,7 +103,7 @@ class AutoSelector:
 
 
 def clamp_to_range(slot: AppSettings, pan: float, tilt: float, hfov: float, vfov: float) -> tuple[float, float]:
-    """Keep the picture's edges inside the shooting range (Canon step 1)."""
+    """Keep the picture's edges inside the shooting range (Pan/Tilt Operation Control)."""
     r = slot.shooting_range
     if not r.enabled:
         return pan, tilt

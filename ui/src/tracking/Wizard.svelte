@@ -8,7 +8,7 @@
   import Steps from "./Steps.svelte";
 
   // The Settings Wizard (Previous / Next) and its individual settings pages (pick any, then Finish).
-  // Canon's ten pages, grouped by what they decide. Main steps are enough for most venues: the wizard's
+  // The ten pages, grouped by what they decide. Main steps are enough for most venues: the wizard's
   // Next goes through them only, unless "Optional steps too" is on; the list always shows every page,
   // with a mark where a page is in use (and "!" where a main step still needs doing).
   // Every page shows the picture with pan/tilt/zoom sliders. The wizard saves on every Previous/Next;
@@ -18,7 +18,7 @@
   type Info = { id: number; title: string; group: string; main: boolean; mouse: MouseMode; shown: AreaKind[] | null;
                 editable: AreaKind[]; state: (s: AppSettings) => "on" | "todo" | "" };
   const any = (areas: { enabled: boolean }[]) => areas.some((a) => a.enabled);
-  // `id` is the page's content in Steps.svelte (Canon's step number)
+  // `id` is the page's content in Steps.svelte (its page number)
   const STEPS: Info[] = [
     { id: 1, title: "Pan/Tilt Operation Control", group: "Picture area", main: true, mouse: "center", shown: ["range"], editable: [],
       state: (s) => (s.shooting_range.enabled || s.fix_tilt ? "on" : "") },
@@ -76,7 +76,7 @@
   });
 
   async function go(to: number) {
-    if (mode === "wizard") await slots.command({ type: "save" }, false); // Canon: each page is saved on Previous/Next
+    if (mode === "wizard") await slots.command({ type: "save" }, false); // each page is saved on Previous/Next
     step = to;
   }
 

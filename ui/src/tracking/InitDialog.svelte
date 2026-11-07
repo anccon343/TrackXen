@@ -1,7 +1,7 @@
 <script lang="ts">
   import { slots } from "../lib/slots.svelte";
 
-  // Canon's Initialization dialog: the selected App Settings (preset links kept) or all of them.
+  // The Initialization dialog: the selected App Settings (preset links kept) or all of them.
   let { onclose }: { onclose: () => void } = $props();
   let scope = $state<"slot" | "all">("slot");
 

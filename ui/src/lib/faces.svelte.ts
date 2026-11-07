@@ -1,4 +1,4 @@
-// Registered faces (Canon step 9): the faces kept on the TrackXen PC, and each camera's list of
+// Registered faces: the faces kept on the TrackXen PC, and each camera's list of
 // them (priority order, on/off). Names show on the picture next to recognised people.
 import { getJSON, live, postJSON, type Reply } from "./live.svelte";
 import { ui } from "./ui.svelte";

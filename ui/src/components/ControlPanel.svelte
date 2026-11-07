@@ -3,7 +3,7 @@
   import PtzPad from "./PtzPad.svelte";
   import TrackingPanel from "./TrackingPanel.svelte";
 
-  // Right-hand panel with tabs, like Canon's remote camera application (Basic / Details / Add-on).
+  // Right-hand panel with tabs: Tracking and PTZ for the selected camera.
   let { camera, onsetup }: { camera: CameraStatus | undefined; onsetup: (mode: "wizard" | "pages") => void } = $props();
   let tab = $state<"tracking" | "basic">("tracking");
 </script>

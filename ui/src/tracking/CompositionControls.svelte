@@ -4,7 +4,7 @@
   import NumberSlider from "../ui/NumberSlider.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
-  // Canon's Composition settings (a Setting Wizard page, also on the Tracking Execution screen), and beyond Canon
+  // The Composition settings (a Setting Wizard page, also on the tracking panel), including
   // Pan/Tilt Smoothness.
   let { slot, help = false }: { slot: AppSettings; help?: boolean } = $props();
   let c = $derived(slot.composition);

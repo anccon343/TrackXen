@@ -16,7 +16,7 @@
   on the real cameras, and Phase 8 (optional).
 
 **Background:**
-- `reference.md`: what Canon's app does, and descriptions of your two UI screenshots.
+- `../features.md`: every feature and setting.
 - `research.md`: why each technology was chosen.
 
 ---
@@ -24,8 +24,8 @@
 ## 1. What v1 is
 
 **In scope**
-- **Canon's feature set:** the Canon Auto Tracking App (RA-AT001) rebuilt for **4 × BirdDog P400**,
-  each camera tracking its own person. Every feature in `reference.md` sections 2–4 is included:
+- **The feature set** for **4 × BirdDog P400**, each camera tracking its own person. Every feature in
+  `../features.md` is included:
   - the 8 area types and their rules
   - the 10-step setup wizard, also usable as individual pages
   - 5 named App Settings per camera
@@ -40,7 +40,7 @@
   not tied to this machine. It runs best on an NVIDIA RTX card, and also runs on other GPUs or CPU only,
   with fewer cameras or lower rates. (As built, a PC without an NVIDIA card runs detection on the
   processor; AMD and Intel GPUs aren't used.) Tablets and phones install nothing; they open the app in a browser.
-- **Web UI** in Canon's style, used from the PC and from tablets/phones.
+- **Web UI**, used from the PC and from tablets/phones.
 - **Performance modes** (requirement added 2026-10-31), switchable at any time:
   - **Light**, for slower PCs or when sharing with vMix: smallest model, lower input resolution, fewer
     detections per second, NDI low-bandwidth stream, face checks less often. (As built: the n model
@@ -115,7 +115,7 @@
   - the web server and settings
   - camera connections
   - a 50 Hz control loop per camera
-  - the Canon rules (areas, auto select, composition)
+  - the tracking rules (areas, auto select, composition)
   - the vMix and mixer connections
   - a watchdog
 - **Vision worker:** the heavy part. NDI video in, AI models, trackers, faces, preview images for the UI.
@@ -198,8 +198,8 @@ and the slowest usable on-air speed.
 **Done when:** a camera follows a person walking across the stage smoothly and keeps them framed. It
 never runs away, and it stops if the app or the network drops. The packaged version runs on a second PC.
 
-### Phase 3: Canon-style UI (large)
-- **Main screen** (like Canon's Remote Camera Control App):
+### Phase 3: the UI (large)
+- **Main screen:**
   - camera list
   - 2×2 live grid with overlays, tally colours and status badges
   - right panel with PTZ pad, zoom/focus and presets
@@ -208,9 +208,9 @@ never runs away, and it stops if the app or the network drops. The packaged vers
   - Auto Tracking switch and status badge
   - mouse modes: Click Centering, Tracking Target Select, Silhouette, Set Area
   - View Initial Position
-- **Settings pages** in Canon's web-settings style: icon rail, navigation column, green Apply / grey
+- **Settings pages:** icon rail, navigation column, green Apply / grey
   Clear, and a marker on changed fields.
-- **Look and feel:** dark theme and colours from `reference.md`; big enough touch targets for tablets.
+- **Look and feel:** dark theme; big enough touch targets for tablets.
 - **Status bar and problem lights:**
   - A **Statistics** button in the bottom bar, like vMix, opens the statistics page.
   - GPU and CPU load are always visible.
@@ -219,7 +219,7 @@ never runs away, and it stops if the app or the network drops. The packaged vers
 
 **Done when:** everything from Phase 2 works from the PC and from a tablet.
 
-### Phase 4: Canon feature parity (large, four parts)
+### Phase 4: the full feature set (large, four parts)
 - **4a Areas and composition:**
   - shooting range and fixed tilt
   - initial position and lost-target behaviour
@@ -242,7 +242,7 @@ never runs away, and it stops if the app or the network drops. The packaged vers
   - recall presets from the UI
   - notice recalls made elsewhere, where FreeD allows
 
-**Done when:** every item in `reference.md` section 3 works on the real cameras.
+**Done when:** every setting in `../features.md` works on the real cameras.
 
 ### Phase 5: Your two extras (medium)
 - **5a On-air motion:**

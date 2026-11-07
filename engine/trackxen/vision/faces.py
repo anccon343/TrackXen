@@ -1,4 +1,4 @@
-"""Registered Face Tracking (Canon step 9): who is who, by face.
+"""Registered Face Tracking: who is who, by face.
 
 OpenCV's YuNet finds the face (and 5 landmarks) inside a tracked person's head crop; SFace turns
 the aligned face into a 128-number fingerprint; fingerprints are compared by cosine similarity
@@ -125,7 +125,7 @@ class FaceEngine:
         return feature / max(np.linalg.norm(feature), 1e-9)
 
     def quality(self, crop: np.ndarray, face: np.ndarray | None) -> str:
-        """Why this face isn't good enough to register ("" = good): Canon's rules of thumb."""
+        """Why this face isn't good enough to register ("" = good): rules of thumb."""
         if face is None:
             return "no face in the frame"
         x, y, w, h = face[:4]

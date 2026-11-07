@@ -2,7 +2,7 @@
   import { live } from "../lib/live.svelte";
   import VideoCanvas from "./VideoCanvas.svelte";
 
-  // Left "Camera List" with small live thumbnails, like Canon's remote camera application.
+  // Left "Camera List" with small live thumbnails.
   let { selected, onselect }: { selected: string | null; onselect: (id: string) => void } = $props();
   let cameras = $derived(live.status?.cameras ?? []);
   let problems = $derived(live.status?.problems ?? []);

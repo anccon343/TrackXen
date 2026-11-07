@@ -4,8 +4,8 @@ Per update:
 1. The person's head point in a frame + the camera's position when that frame was
    captured -> the person's direction in room angles (Kalman filtered).
 2. Predict that direction `lookahead` seconds ahead (video and command delays).
-3. The camera should point so the head sits at the framing point (Canon's Display Position).
-4. Inside the dead zone (Canon's Pan/Tilt Halting Area) the camera stays still; once it
+3. The camera should point so the head sits at the framing point (the Display Position).
+4. Inside the dead zone (the Pan/Tilt Halting Area) the camera stays still; once it
    moves, it keeps going until the error is small again and the person has (nearly) stopped:
    a walking person is followed in one movement, not in stop-start pulses. A move doesn't turn
    back inside the dead zone (a walker who stops is passed a little: it ends there). The dead
@@ -16,7 +16,7 @@ Per update:
    with the person) and acceleration (optionally an S-curve), then mapped to the camera's
    real speed steps, with hysteresis between neighbouring steps. Ahead of a walking person
    (after catching up) the camera waits for them rather than turning back.
-6. Auto zoom keeps the person at the wanted size (Canon's Display Size), also while a walker is
+6. Auto zoom keeps the person at the wanted size (the Display Size), also while a walker is
    followed; not while the camera catches up.
 
 The session can also limit where the camera may aim (`constrain`: shooting range, priority
@@ -83,7 +83,7 @@ class Framing:
     anchor_y: float = 0.30  # ... and height (0 = top)
     dead_zone_x: float = 0.06  # half-size of the "don't move" zone, fraction of the frame
     dead_zone_y: float = 0.08
-    display_size: bool = False  # zoom to target_height when a target is locked (Canon Display Size)...
+    display_size: bool = False  # zoom to target_height when a target is locked (Display Size)...
     auto_zoom: bool = False  # ...and keep it there while tracking (needs display_size)
     target_height: float = 0.55  # person height as a fraction of the frame
     zoom_dead_band: float = 0.15  # relative size error tolerated before zooming

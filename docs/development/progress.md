@@ -1,6 +1,6 @@
 # Progress log
 
-The app is called **TrackXen** (code package `trackxen`). Open questions are in `docs/questions.md`.
+The app is called **TrackXen** (code package `trackxen`). Open questions are in `questions.md`.
 
 ## How to run it (development)
 
@@ -9,7 +9,7 @@ The app is called **TrackXen** (code package `trackxen`). Open questions are in 
 .venv\Scripts\python -m trackxen --sim          (window 2: TrackXen)
 open http://127.0.0.1:8090                       (the UI; /test is the simple Phase 2 page)
 .venv\Scripts\python tools\sim_test.py          (optional: automatic 30 s tracking test)
-.venv\Scripts\python tools\sim_scenarios.py     (optional: Canon rules end to end, 10 scenarios)
+.venv\Scripts\python tools\sim_scenarios.py     (optional: the tracking rules end to end, 10 scenarios)
 .venv\Scripts\python tools\sim_load.py          (optional, with --sim-cameras 4: all cameras at once, measured)
 .venv\Scripts\python tools\get_face_models.py   (once per PC: the face models for Registered Face Tracking)
 .venv\Scripts\python tools\hardware_test.py     (measure the PC, recommend Light / Auto / HYPER)
@@ -52,7 +52,7 @@ checked against the fakes and a local NDI test source. The real measurements wai
 - **Control:**
   - lens model (zoom ↔ field of view)
   - Kalman prediction in room angles
-  - controller with framing point, dead zone (Canon's halting area), feed-forward, speed and
+  - controller with framing point, dead zone (the Pan/Tilt Halting Area), feed-forward, speed and
     acceleration limits, mapping onto real speed steps, auto zoom
   - camera link: coalesced VISCA, FreeD history, auto-reconnect
 - **Core:**
@@ -110,7 +110,7 @@ checked against the fakes and a local NDI test source. The real measurements wai
 - **Faster image preparation:** 22.5 → 17.2 ms per batch of 4 on CUDA (+30%). Measured three
   alternatives; OpenCV's blobFromImage was slower and was rejected.
 
-## 2026-10-31: Phase 3, Canon-style web UI (core done)
+## 2026-10-31: Phase 3, the web UI (core done)
 
 - **Cameras view:** camera list, 2×2 grid (double-click for one large camera), live picture with
   person boxes and target brackets, click a person to track them, Auto Tracking per camera,
@@ -120,7 +120,7 @@ checked against the fakes and a local NDI test source. The real measurements wai
 - **Statistics page:** vMix-like table per camera (source fps, arrival gaps, source dropped, detector
   skipped, detection time, frame → result, VISCA round trip, FreeD, targets lost / re-found / watchdog
   stops), PC panel, live graphs, problems, log file view, Reset.
-- **Settings (Canon web-settings style):**
+- **Settings:**
   - **Cameras:** "Find devices" finds NDI sources and BirdDog cameras.
   - **Performance:** mode and hardware test.
   - **Advanced:** certainty thresholds, live; locked until "Advanced mode" is on.
@@ -129,10 +129,10 @@ checked against the fakes and a local NDI test source. The real measurements wai
 - **Checks:** checked in the browser pane against the virtual camera; svelte-check reports no errors.
   `npm audit`: one low-severity issue in a build-only dependency (not shipped).
 
-## 2026-11-01: Phase 4a, Canon's App Settings, areas and setting wizard
+## 2026-11-01: Phase 4a, App Settings, areas and setting wizard
 
 **Built**
-- **App Settings:** 5 named slots per camera with every Canon setting and range
+- **App Settings:** 5 named slots per camera with every setting and its range
   (`core/tracking_settings.py`); live changes, kept on disk after Save; Initialization (one slot, or
   all slots and the preset links).
 - **Areas, stored in room angles** (they stay on the room while the camera moves; `rules/`):
@@ -141,9 +141,9 @@ checked against the fakes and a local NDI test source. The real measurements wai
     shot captured with the area is held while the target is inside, with a margin so it doesn't
     flap at the edge)
   - auto select area with start time, exclusion areas 1-4, tracking halting areas 1-4
-  - Canon's precedence rules and its consistency checks ("outside the shooting range", "can't be
+  - The precedence rules between areas and their consistency checks ("outside the shooting range", "can't be
     used together", "outside the initial position's view") shown on the pages
-- **Tracking behaviour** (`core/session.py`): Canon's statuses (No target selected, Searching,
+- **Tracking behaviour** (`core/session.py`): the statuses (No target selected, Searching,
   Tracking, Angle Fixed, Target lost); start from the initial position; when lost: keep the view or
   return to the initial position after the set time; fix tilt; sensitivity 1-10; Display Size (zoom
   once) and Auto Zoom (keep zooming).
@@ -155,7 +155,7 @@ checked against the fakes and a local NDI test source. The real measurements wai
   starts with the chosen slot once the camera is there; Off = tracking stops; blank = manual operation.
 - **UI:** Tracking Execution panel (slot buttons, Auto Tracking, status, composition, Initialization,
   Save), mouse modes (Tracking Target Select, Click Centering, Silhouette Manipulation, Set Area),
-  areas drawn in Canon's colours and dragged/resized on the picture, the silhouette, people in
+  areas drawn in their colours and dragged/resized on the picture, the silhouette, people in
   halting/exclusion areas dimmed, auto-select countdown; Setting Wizard and settings pages (steps
   1-7 and 10; 8 and 9 come with Phases 4b/4c) with pan/tilt/zoom sliders around the picture. Works
   at phone width.
@@ -191,7 +191,7 @@ preset link "On" starts tracking with App Settings 4 at the preset.
 - **Face Direction:** from the nose against the ears/eyes; smoothed by the sensitivity; the display
   position moves to leave space in front; "facing forward" keeps or centres it.
 - **Sit/Stand:** from the knee drop against the torso length (keypoints), 0.7 s before a change
-  counts; sitting and standing sizes; turning it on switches Display Size and Auto Zoom on (Canon).
+  counts; sitting and standing sizes; turning it on switches Display Size and Auto Zoom on.
 - **UI:** wizard step 8, Auto Framing toggles on the tracking panel, group members marked on the
   picture, "Tracking N people", "facing left", "sitting".
 - **Bugs found in the simulator and fixed:** the group transition was first fed to the motion filter
@@ -212,11 +212,11 @@ preset link "On" starts tracking with App Settings 4 at the preset.
   second, at most two people per frame), so detection never waits. Identities are attached to the
   tracks.
 - **Faces:** stored only on this PC (`data/faces/`: names, fingerprints, 96 px thumbnails), shared by
-  all cameras; each camera has its own list of up to 7 (order = priority, on/off), like Canon's.
-  Registration: a frame on the picture with Canon's checks (one clear face, big enough, centred,
+  all cameras; each camera has its own list of up to 7 (order = priority, on/off).
+  Registration: a frame on the picture with checks (one clear face, big enough, centred,
   facing the camera, not too dark/bright) turns green; Capture. Delete; add a face registered on
   another camera; Settings → System → Delete all face data.
-- **Tracking with faces (Canon):** with Registered Face Tracking on, only switched-on registered
+- **Tracking with faces:** with Registered Face Tracking on, only switched-on registered
   faces are picked, the highest priority first, at once (no start time), also after a loss; a
   higher-priority face appearing doesn't take over. **Identity lock:** a lost target with a known
   face is re-found by face anywhere in the picture, and someone recognised as another person is
@@ -827,7 +827,7 @@ are still estimates.
   only the IR remote (PTZOptics' G3 manual says so).
 - **Comparable trackers** keep a smoothness or acceleration control next to sensitivity and a dead band
   (Sony Auto Framing's Speed, PTZOptics' acceleration, Seervision's smoothness, TrackPilot's Style and
-  Attack, OBSBOT's Lazy to Crazy). Canon has Sensitivity and the halting area only.
+  Attack, OBSBOT's Lazy to Crazy).
 - So TrackXen does the smoothing, for tracking and for its own joystick.
 
 **The measured causes**
@@ -1035,11 +1035,11 @@ Every page was checked in the browser with the simulator at 1920x1080, 1366x768,
 390-px phone. Changes, each for a problem seen in the screenshots:
 - **On/off switches** said "On" next to a switch that was off. They now say On or Off.
 - **The mouse mode and View Initial Position** were in the right panel, away from the picture they act
-  on. They are now above the pictures, where Canon's app has them (reference.md 4.1).
+  on. They are now above the pictures, next to the picture they act on.
 - **Tracking panel order:** the controls used during a service come first (Auto Tracking, Status,
   target), then On Air and Audio follow, then App Settings 1-5 and the setting sections. **Save** and
   **Initialization** stay at the bottom of the panel instead of below a long scroll. Registered Face
-  Tracking can be switched there too (Canon has it on that screen).
+  Tracking can be switched there too.
 - **Composition** is split into Framing (where the person sits, display size) and Movement (halting
   area, sensitivity, smoothness), on the panel and in wizard step 5.
 - **Each picture's header** has an Auto Tracking switch instead of an "Auto Tracking OFF" button that
@@ -1052,7 +1052,7 @@ Every page was checked in the browser with the simulator at 1920x1080, 1366x768,
 
 ## 2026-11-06: grouped Setting Wizard, updates from GitHub
 
-**Setting Wizard.** The ten pages are no longer only in Canon's order:
+**Setting Wizard.** The ten pages are grouped:
 - Four groups in the list: Picture area (Pan/Tilt Operation Control, Initial Position), Choosing the
   target (Auto Select, Exclusion Areas, Halting Areas), Framing and movement (Composition, Priority
   Display / Fixed Viewing Angle Areas, Auto Framing), Extras (Registered Faces, Camera Preset Link).
@@ -1091,7 +1091,7 @@ Every page was checked in the browser with the simulator at 1920x1080, 1366x768,
 ## 2026-11-06: register the face of any person in the picture
 
 Before, a face could only be registered from the frame in the middle of the picture, so the person had
-to stand in the centre (Canon's way). Now **Click a person…** on the registration panel, then a click
+to stand in the centre. Now **Click a person…** on the registration panel, then a click
 on anyone in the picture, makes the registration frame follow that person's head
 (`FaceWorker.picks`, `head_square` in `vision/faces.py`; `face_guide` takes a `track`). The same quality
 checks apply; a chosen face must also be at least 6 % of the picture's height wide (the centred frame
@@ -1100,13 +1100,25 @@ leaves the picture the panel says so. Tests: `test_faces.py` (registered from a 
 middle, the frame's place, a person who left, a face too small in 4K, the command's checks). Tried in
 the browser with the simulator.
 
+## 2026-11-07: TrackXen as its own product, ready to open
+
+- **The red ball:** TrackXen's mark is a big glossy red ball, drawn in one place
+  (`engine/trackxen/brand.py`) for the program's icon (`packaging/make_icon.py` → `trackxen.ico`)
+  and the tray icon; the web UI shows the same ball as its browser-tab icon and next to the name.
+- **Its own texts:** the README, the user guide and the comments in the code describe TrackXen in its
+  own words. `docs/features.md` describes every feature and setting (it replaces the old reference
+  notes). The development notes (plan, research, this log, questions) moved to `docs/development/`.
+- **Open source:** `LICENSE` holds the AGPL-3.0 text the project was already under; the third-party
+  notices stay in `LICENSE-NOTICE.txt`. No credentials, addresses or third-party reference material are
+  in the repository.
+
 ## Audits
 
 - **End of Phase 2:** structure OK. Fixed: camera loops that could die silently; missing Origin check;
   crashes not reaching the log; session logic without tests (8 tests added).
 - **End of Phase 4a:** added ruff (lint clean). Fixed: preset numbers not range-checked; area on/off
   values not coerced to booleans; a failed absolute move left a stale "moving" state; an effect in
-  the wizard that reset the mouse mode ten times a second. Structure: Canon's rules live in
+  the wizard that reset the mouse mode ten times a second. Structure: the tracking rules live in
   `rules/` (pure functions, unit-tested), the session only sequences them.
 - **End of the night (Phases 4b-7):** `core/app.py` had grown to 651 lines with three jobs; registered
   faces moved to `FaceManager` (`core/faces.py`) and vMix tally / mixer / audio-follow to `LiveInputs`

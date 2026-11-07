@@ -1,4 +1,4 @@
-"""Canon's Auto Framing (wizard step 8): what to frame this frame, beyond "the target's head at
+"""Auto Framing: what to frame this frame, beyond "the target's head at
 the display position".
 
 - **Multi-Person:** people near the main target are framed with them (2-4 people); the camera
@@ -189,7 +189,7 @@ class Framer:
                pose: Pose, lens: Lens, t: float) -> list[Placed]:
         """People framed with the main target: nearest first, while the view they need keeps the main
         person at least the minimum size and the lens can still show it. Nobody joins while the main
-        target is near the edge of the picture (Canon: sub-targets drop out then). Joining and
+        target is near the edge of the picture (sub-targets drop out then). Joining and
         leaving have a little patience (no flicker)."""
         min_share = MIN_SIZE[slot.auto_framing.multi_person.min_size]
         widest = min(lens.hfov_for_vfov(main.height / min_share), lens.hfov_wide * EDGE_ROOM)

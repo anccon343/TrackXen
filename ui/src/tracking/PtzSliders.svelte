@@ -3,7 +3,7 @@
   import { live, type CameraStatus } from "../lib/live.svelte";
   import { holdToMove } from "../lib/hold";
 
-  // The settings pages' camera controls around the picture, like Canon's: pan slider under the
+  // The settings pages' camera controls around the picture: pan slider under the
   // video (◀ ▶ fine buttons), tilt slider on the right (▲ ▼), zoom slider at the far right
   // (up = telephoto, T / W). Sliders move the camera to an absolute position; the fine buttons
   // move it while held.

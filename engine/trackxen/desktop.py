@@ -79,14 +79,10 @@ def _message(text: str) -> None:
 
 
 def _icon_image():
-    """The tray icon, drawn here (no image file needed): an orange ring on dark, like the UI."""
-    from PIL import Image, ImageDraw
+    """The tray icon: TrackXen's red ball, drawn here (no image file needed)."""
+    from trackxen.brand import red_ball
 
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.ellipse((2, 2, 62, 62), fill=(28, 28, 28, 255), outline=(217, 115, 13, 255), width=6)
-    d.ellipse((24, 24, 40, 40), fill=(217, 115, 13, 255))
-    return img
+    return red_ball(64)
 
 
 def _engine(cfg, config_path: Path, holder: dict) -> None:

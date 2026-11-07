@@ -1,5 +1,5 @@
 <script lang="ts">
-  // On/off switch in the Canon style: orange when on. The label says the state ("On" / "Off"), unless
+  // On/off switch: orange when on. The label says the state ("On" / "Off"), unless
   // a fixed label is given ("" for none).
   let { checked = false, label, disabled = false, onchange }: {
     checked?: boolean; label?: string; disabled?: boolean; onchange?: (value: boolean) => void;

@@ -1,6 +1,6 @@
 """Registered faces, kept only on this PC: data/faces/faces.json (names and face fingerprints) and
 one small thumbnail per face. Shared by all cameras; each camera's settings list which of them it
-uses, in priority order (config.FaceRef). Canon: get people's consent before registering them,
+uses, in priority order (config.FaceRef). Get people's consent before registering them,
 and delete the data when it is no longer needed (wipe)."""
 
 from __future__ import annotations
@@ -140,7 +140,7 @@ class FaceManager:
         self.captures = {n: c for n, c in self.captures.items() if c[0] != camera}
 
     def _changed(self) -> None:
-        """Face list edits are kept at once (like Canon's registration), and the face thread is told."""
+        """Face list edits are kept at once, and the face thread is told."""
         if self.app.config_path:
             self.app.config.save(self.app.config_path)
         self._to_worker({"type": "faces", "gallery": self.store.gallery()})
@@ -196,7 +196,7 @@ class FaceManager:
         return {"ok": True}
 
     def wipe(self) -> None:
-        """Delete every registered face from this PC (Canon: when the system is given away)."""
+        """Delete every registered face from this PC (when the system is given away)."""
         self.store.wipe()
         self.names.clear()
         for s in self.app.sessions.values():

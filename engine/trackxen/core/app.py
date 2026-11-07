@@ -740,7 +740,7 @@ class App:
             session.click_center(float(cmd["x"]), float(cmd["y"]))
         elif kind == "initialize":  # "slot" (the selected App Settings) or "all"
             session.initialize("all" if cmd.get("scope") == "all" else "slot")
-        elif kind == "save":  # Canon's Save: changes made on the tracking screen are kept
+        elif kind == "save":  # Save: changes made on the tracking screen are kept
             if self.config_path:
                 self.config.save(self.config_path)
             self.log.event("settings", "tracking settings saved", source=session.cfg.id)

@@ -1,4 +1,4 @@
-// How each kind of area looks, after the colours and line styles in Canon's area diagram.
+// How each kind of area looks: its colour and line style.
 import type { AreaKind } from "./live.svelte";
 
 export interface AreaStyle {
@@ -7,7 +7,7 @@ export interface AreaStyle {
   label: string;
 }
 
-const FIXED = ["#f1c40f", "#2ecc71", "#3a8ee6", "#ff6fb5"]; // yellow, green, blue, pink as in Canon's screens
+const FIXED = ["#f1c40f", "#2ecc71", "#3a8ee6", "#ff6fb5"]; // yellow, green, blue, pink
 const EXCLUSION = ["#a569bd", "#c39bd3", "#8e44ad", "#d2b4de"];
 const HALTING = ["#e040fb", "#ff4fd8", "#d81b60", "#f48fb1"];
 

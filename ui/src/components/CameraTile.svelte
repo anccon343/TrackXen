@@ -4,7 +4,7 @@
   import VideoCanvas from "./VideoCanvas.svelte";
   import Toggle from "../ui/Toggle.svelte";
 
-  // One camera in the multi-view, like a slot in Canon's Remote Camera Control Application.
+  // One camera in the multi-view.
   let { camera, index, selected = false, onselect, onfocus }: {
     camera: CameraStatus; index: number; selected?: boolean; onselect: () => void; onfocus: () => void;
   } = $props();

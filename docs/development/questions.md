@@ -18,7 +18,7 @@ myself on a P400.
 5. **HYPER mode for 4 cameras.** On this PC (RTX 4080 SUPER), the measured HYPER model at 960 px
    manages 123 images/s, enough for 2 cameras at 30 fps but not 4 (needs 168 with headroom). Moving the
    image preparation onto the GPU could fix that. Worth doing now, or later? **Answer: now.**
-6. **Face recognition model.** For registered faces (Canon step 9) I plan OpenCV's YuNet + SFace (free,
+6. **Face recognition model.** For registered faces (Registered Face Tracking) I plan OpenCV's YuNet + SFace (free,
    commercial use allowed). InsightFace is more accurate but its free models are for non-commercial
    *research* only. OK to use SFace? **Answer: keep SFace.** (The two models came from OpenCV's model
    zoo with `tools/get_face_models.py`.)

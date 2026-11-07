@@ -1,8 +1,9 @@
 # TrackXen user guide
 
 TrackXen points up to four BirdDog P400 cameras at the people on stage by itself: each camera
-follows its own person. It works like Canon's Auto Tracking Application, with vMix tally and
-microphone-follow added. This guide is for running it; the technical notes are in `progress.md`.
+follows its own person, calmer while it is live in vMix, and can send a camera to whoever starts
+speaking into a microphone. This guide is for running it; every setting is described in
+[features.md](features.md), and the development notes are in `development/`.
 
 **Safety first:** the red **STOP ALL** button (top right, on every screen except the PIN screen)
 switches Auto Tracking and Audio follow off on every camera and stops every camera at once. Keep a
@@ -19,11 +20,11 @@ says so: press it again.
   firewall on the first start: allow private networks).
 - An NVIDIA RTX card is recommended; without one TrackXen runs on the processor and can only follow
   people slowly.
-- TrackXen starts in the background (an orange ring in the notification area, near the clock) and
-  opens its page in the browser. Right-click the ring: **Open TrackXen**, **Open the logs folder**,
+- TrackXen starts in the background (a red ball in the notification area, near the clock) and
+  opens its page in the browser. Right-click the ball: **Open TrackXen**, **Open the logs folder**,
   **Quit TrackXen**. Starting TrackXen again while it runs just opens its page.
 - If TrackXen can't start (for example another program uses port 8090), a message says why and
-  there is no ring.
+  there is no ball.
 - Tablets and phones on the same network: open `http://<this PC's address>:8090`, or the PC's name
   (`http://<PC name>:8090`). Other names, such as an alias set up on the router, are refused.
 - **The first start needs the internet:** TrackXen downloads NVIDIA's graphics libraries for this
@@ -120,7 +121,7 @@ Press **Setting Wizard** (or **Settings pages** to jump to one page). Each page 
 with pan, tilt and zoom sliders around it. The frames you draw stay fixed to the room, even when
 the camera moves.
 
-The ten pages are Canon's, in four groups. **Next** goes through the main steps (1, 2, 3 and 6),
+The ten pages are in four groups. **Next** goes through the main steps (1, 2, 3 and 6),
 which are enough for most venues; tick **Optional steps too** to go through all ten. The list on the
 left always shows every page: ✓ = in use, ! = a main step still to do (the initial position).
 
@@ -152,7 +153,7 @@ left always shows every page: ✓ = in use, ! = a main step still to do (the ini
    followed. Ask people first; the data stays on this PC.
 10. **Camera Preset Link** (optional): what tracking does after a camera preset is recalled.
 
-### Pan/Tilt Smoothness (beyond Canon)
+### Pan/Tilt Smoothness
 
 **Composition → Pan/Tilt Smoothness**, 1-10 per App Settings, default 5: on the wizard's Composition
 page and on the Cameras page under Tracking Sensitivity.
@@ -312,7 +313,7 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 - Changing or switching off the PIN from another device needs the current PIN.
 - Signing out, **Change the PIN**, **Sign out other devices** and switching the PIN on also close
   pages already open on other devices; they show the number pad.
-- The TrackXen PC needs no PIN only when its page is opened as `localhost` or `127.0.0.1` (the ring's
+- The TrackXen PC needs no PIN only when its page is opened as `localhost` or `127.0.0.1` (the tray ball's
   **Open TrackXen** does that). Opened by the PC's name or address, it asks too.
 
 ## 10. When something is off
