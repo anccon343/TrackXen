@@ -14,7 +14,7 @@
 </script>
 
 <header class="top">
-  <span class="logo"><span class="ball" aria-hidden="true"></span><span>Track<b>Xen</b></span></span>
+  <span class="logo"><svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="trackxen-mark" x1="0.3" y1="0" x2="0.7" y2="1"><stop offset="0" stop-color="#ff695c" /><stop offset="0.4" stop-color="var(--brand)" /><stop offset="1" stop-color="#800410" /></linearGradient></defs><polygon points="32,7 58,53 6,53" fill="url(#trackxen-mark)" stroke="url(#trackxen-mark)" stroke-width="8" stroke-linejoin="round" /></svg><span>Track<b>Xen</b></span></span>
   <nav>
     <button class:active={view === "cameras"} onclick={() => onview("cameras")}>Cameras</button>
     <button class:active={view === "statistics"} onclick={() => onview("statistics")}>Statistics</button>
@@ -33,9 +33,8 @@
   .logo { font-size: 18px; letter-spacing: 0.5px; }
   .logo { display: inline-flex; align-items: center; gap: 8px; }
   .logo b { color: var(--brand); }
-  /* the red ball, as in the program's icon */
-  .ball { width: 20px; height: 20px; border-radius: 50%; flex: none;
-          background: radial-gradient(circle at 32% 30%, #fff2ef 0, #ff7a69 18%, var(--brand) 55%, #6e000c 100%); }
+  /* the red triangle, as in the program's icon */
+  .mark { width: 22px; height: 22px; flex: none; }
   nav { display: flex; gap: 2px; height: 100%; }
   nav button { background: none; border: none; border-bottom: 3px solid transparent; border-radius: 0; height: 100%;
                color: var(--dim); padding: 0 14px; }

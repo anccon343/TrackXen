@@ -79,10 +79,10 @@ def _message(text: str) -> None:
 
 
 def _icon_image():
-    """The tray icon: TrackXen's red ball, drawn here (no image file needed)."""
-    from trackxen.brand import red_ball
+    """The tray icon: TrackXen's red triangle, drawn here (no image file needed)."""
+    from trackxen.brand import mark
 
-    return red_ball(64)
+    return mark(64)
 
 
 def _engine(cfg, config_path: Path, holder: dict) -> None:

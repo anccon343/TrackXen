@@ -20,11 +20,11 @@ says so: press it again.
   firewall on the first start: allow private networks).
 - An NVIDIA RTX card is recommended; without one TrackXen runs on the processor and can only follow
   people slowly.
-- TrackXen starts in the background (a red ball in the notification area, near the clock) and
-  opens its page in the browser. Right-click the ball: **Open TrackXen**, **Open the logs folder**,
+- TrackXen starts in the background (a red triangle in the notification area, near the clock) and
+  opens its page in the browser. Right-click the triangle: **Open TrackXen**, **Open the logs folder**,
   **Quit TrackXen**. Starting TrackXen again while it runs just opens its page.
 - If TrackXen can't start (for example another program uses port 8090), a message says why and
-  there is no ball.
+  there is no triangle.
 - Tablets and phones on the same network: open `http://<this PC's address>:8090`, or the PC's name
   (`http://<PC name>:8090`). Other names, such as an alias set up on the router, are refused.
 - **The first start needs the internet:** TrackXen downloads NVIDIA's graphics libraries for this
@@ -313,7 +313,7 @@ PIN it stays signed in. The TrackXen PC itself never asks, unless you tick **Ask
 - Changing or switching off the PIN from another device needs the current PIN.
 - Signing out, **Change the PIN**, **Sign out other devices** and switching the PIN on also close
   pages already open on other devices; they show the number pad.
-- The TrackXen PC needs no PIN only when its page is opened as `localhost` or `127.0.0.1` (the tray ball's
+- The TrackXen PC needs no PIN only when its page is opened as `localhost` or `127.0.0.1` (the tray triangle's
   **Open TrackXen** does that). Opened by the PC's name or address, it asks too.
 
 ## 10. When something is off

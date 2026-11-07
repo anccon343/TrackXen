@@ -1102,9 +1102,9 @@ the browser with the simulator.
 
 ## 2026-11-07: TrackXen as its own product, ready to open
 
-- **The red ball:** TrackXen's mark is a big glossy red ball, drawn in one place
+- **The red triangle:** TrackXen's mark is a red triangle with rounded corners, drawn in one place
   (`engine/trackxen/brand.py`) for the program's icon (`packaging/make_icon.py` → `trackxen.ico`)
-  and the tray icon; the web UI shows the same ball as its browser-tab icon and next to the name.
+  and the tray icon; the web UI shows the same triangle as its browser-tab icon and next to the name.
 - **Its own texts:** the README, the user guide and the comments in the code describe TrackXen in its
   own words. `docs/features.md` describes every feature and setting (it replaces the old reference
   notes). The development notes (plan, research, this log, questions) moved to `docs/development/`.

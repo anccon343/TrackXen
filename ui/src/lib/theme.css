@@ -1,4 +1,4 @@
-/* TrackXen look: dark, orange accent for controls, green "apply", and the brand red of the ball logo. */
+/* TrackXen look: dark, orange accent for controls, green "apply", and the brand red of the triangle logo. */
 :root {
   --bg: #1c1c1c;
   --panel: #2a2a2a;
@@ -10,7 +10,7 @@
   --text: #e8e8e8;
   --dim: #a0a0a0;
   --accent: #d9730d;
-  --brand: #e0242b; /* the red ball (engine/trackxen/brand.py) */
+  --brand: #e0242b; /* the red triangle (engine/trackxen/brand.py) */
   --green: #0a8a2e;
   --red: #c0392b;
   --yellow: #d4ac0d;
