@@ -1,0 +1,18 @@
+# Development environment (Windows + NVIDIA). Exact versions: requirements-lock.txt
+#
+#   py -3.12 -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements-dev.txt -c requirements-lock.txt
+#
+# The app's own packages come from pyproject.toml (-e . below). To export the models again
+# (tools/export_models.py) also install PyTorch and Ultralytics; the app itself never uses them:
+#   .venv\Scripts\python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#   .venv\Scripts\python -m pip install ultralytics
+
+-e .
+# model tools: tools/fuse_preprocess.py
+onnx
+onnxslim
+pytest
+ruff
+# the Windows program (packaging/build.ps1)
+pyinstaller

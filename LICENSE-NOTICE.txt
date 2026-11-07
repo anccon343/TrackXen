@@ -1,0 +1,36 @@
+TrackXen 0.1.0 - automatic speaker tracking for PTZ cameras
+
+TrackXen is free software: you can redistribute it and/or modify it under the terms of the GNU
+Affero General Public License as published by the Free Software Foundation, version 3 or (at your
+option) any later version (AGPL-3.0-or-later). It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See https://www.gnu.org/licenses/agpl-3.0.html.
+
+TrackXen moves cameras automatically. Always keep a person able to stop it (STOP ALL) when it is
+used in front of an audience.
+
+Third-party software included in this program, under its own licence:
+
+- Ultralytics YOLO26 pose models (exported to ONNX): AGPL-3.0, https://ultralytics.com
+- people.jpg, the hardware test's sample photo: Ultralytics' example image bus.jpg (AGPL-3.0)
+- ONNX Runtime (Microsoft): MIT licence, https://onnxruntime.ai
+- NVIDIA CUDA runtime, cuBLAS, cuFFT, cuRAND, NVRTC, nvJitLink, cuDNN and TensorRT runtime
+  libraries: not included in the setup program. On its first start TrackXen downloads the ones the
+  PC needs from NVIDIA's official packages (files.pythonhosted.org and pypi.nvidia.com) into
+  %LOCALAPPDATA%\TrackXen\gpu-libs. They are NVIDIA's software under NVIDIA's licence agreements
+  (https://docs.nvidia.com/cuda/eula,
+  https://docs.nvidia.com/deeplearning/cudnn/latest/reference/eula.html,
+  https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html)
+- NDI runtime (Vizrt NDI AB), through cyndilib (MIT licence). NDI(R) is a registered trademark of
+  Vizrt NDI AB; see https://ndi.video
+- PyAV (BSD-3-Clause), with the FFmpeg libraries it bundles, built with GPL components (x264, x265):
+  GPL-2.0-or-later, https://ffmpeg.org/legal.html. Used to read cameras' own network streams (RTSP).
+- OpenCV (Apache-2.0), with the YuNet face detector (MIT) and SFace face recognizer (Apache-2.0)
+  from the OpenCV model zoo
+- Python (PSF licence), NumPy (BSD), FastAPI (MIT), Uvicorn (BSD), Pydantic (MIT), psutil (BSD),
+  python-osc (Unlicense), pywin32 (PSF), nvidia-ml-py (BSD), pystray (LGPL-3.0), Pillow (MIT-CMU),
+  Svelte (MIT) and their dependencies
+
+Registered faces, settings and logs are stored only on this PC (%APPDATA%\TrackXen). Ask people
+before registering their faces, and delete the face data when it is no longer needed
+(Settings -> System -> Delete all face data).

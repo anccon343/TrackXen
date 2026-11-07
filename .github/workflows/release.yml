@@ -1,0 +1,138 @@
+# Builds the Windows setup program on every push to main that changes the program, and publishes it as a
+# GitHub release (tag build-<n>) with its SHA-256 file. The installed TrackXen finds it from Settings → System
+# → Updates (engine/trackxen/core/updates.py) and installs it.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md", "LICENSE-NOTICE.txt"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to publish the release
+
+concurrency:  # a newer push replaces a build still running
+  group: release
+  cancel-in-progress: true
+
+jobs:
+  windows-setup:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # The ONNX models are exported once with PyTorch and kept between builds (models/ is not in git).
+      - name: Models from the cache
+        id: models
+        uses: actions/cache/restore@v4
+        with:
+          path: models
+          key: models-${{ hashFiles('tools/export_models.py', 'tools/get_face_models.py') }}-v1
+
+      - name: Export the models
+        if: steps.models.outputs.cache-hit != 'true'
+        run: |
+          python -m venv exportenv
+          exportenv\Scripts\python -m pip install --upgrade pip
+          exportenv\Scripts\python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          exportenv\Scripts\python -m pip install ultralytics onnx onnxslim onnxruntime httpx
+          exportenv\Scripts\python tools\export_models.py --sizes n s m --imgsz 640 --batch 1 4
+          exportenv\Scripts\python tools\export_models.py --sizes m --imgsz 960 --batch 1 4
+          exportenv\Scripts\python tools\get_face_models.py
+          Remove-Item models\*.pt -ErrorAction SilentlyContinue
+
+      - name: Keep the models for the next builds  # (now, so a later failing step doesn't lose them)
+        if: steps.models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: models
+          key: ${{ steps.models.outputs.cache-primary-key }}
+
+      - name: Python packages
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --upgrade pip
+          .venv\Scripts\python -m pip install -r requirements-lock.txt
+          .venv\Scripts\python -m pip install --no-deps -e .
+
+      - name: Web UI packages
+        working-directory: ui
+        run: npm ci
+
+      - name: Inno Setup
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      # A test that fails is run once more: a timing test can miss on a busy runner with Windows' 15.6 ms
+      # clock; a real failure fails twice.
+      - name: Tests
+        run: |
+          .venv\Scripts\python -m pytest -q
+          if ($LASTEXITCODE) {
+            Write-Host "Running the failed tests once more"
+            .venv\Scripts\python -m pytest -q --last-failed
+            if ($LASTEXITCODE) { exit 1 }
+          }
+
+      - name: Build number into the program
+        id: version
+        run: |
+          $base = (Select-String -Path engine\trackxen\__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          $version = "$base.${{ github.run_number }}"
+          @"
+          # Written by the release build (.github/workflows/release.yml); not in git.
+          VERSION = "$version"
+          BUILD = ${{ github.run_number }}
+          COMMIT = "${{ github.sha }}"
+          "@ | Set-Content -Encoding utf8 engine\trackxen\_build.py
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Setup program
+        run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Checksum
+        id: files
+        run: |
+          $exe = Get-ChildItem installer-output\TrackXen-Setup-*.exe | Select-Object -First 1
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Set-Content -Encoding ascii -NoNewline "$($exe.FullName).sha256"
+          "exe=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The notes are the commit message without its trailer lines (Co-Authored-By and the like), which
+          # the installed TrackXen also shows under Updates.
+          $message = (git log -1 --pretty=%B) -join "`n"
+          $notes = "Built from $env:GITHUB_SHA.`n`n" + ($message -replace '(?s)\s*(Co-Authored-By|Claude-Session):.*$', '').Trim()
+          gh release create "build-${{ github.run_number }}" "${{ steps.files.outputs.exe }}" "${{ steps.files.outputs.exe }}.sha256" `
+            --title "TrackXen ${{ steps.version.outputs.version }}" --notes "$notes" --target "$env:GITHUB_SHA" --latest
+
+      - name: Clean the notes of earlier releases
+        continue-on-error: true  # the new release is out either way
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The same trailer lines come off the notes of earlier releases, drafts included (does nothing once
+          # they are clean).
+          foreach ($tag in (gh release list --limit 100 --json tagName --jq '.[].tagName')) {
+            $body = "$((gh release view $tag --json body --jq '.body') -join "`n")".Trim()
+            $clean = ($body -replace '(?s)\s*(Co-Authored-By|Claude-Session):.*$', '').Trim()
+            if ($clean -cne $body) { gh release edit $tag --notes $clean }
+          }

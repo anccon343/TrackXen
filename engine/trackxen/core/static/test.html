@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrackXen test page</title>
+<style>
+  :root { --bg:#1c1c1c; --panel:#2a2a2a; --ctl:#3a3a3a; --line:#444; --text:#e8e8e8; --dim:#a0a0a0;
+          --accent:#d9730d; --green:#0a8a2e; --red:#c0392b; --yellow:#d4ac0d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px system-ui, sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:8px 16px; background:#111; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .grow { flex:1; }
+  button { background:var(--ctl); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:8px 14px;
+           font-size:14px; cursor:pointer; touch-action:manipulation; }
+  button.on { background:var(--accent); border-color:var(--accent); }
+  button.stop { background:var(--red); border-color:var(--red); font-weight:700; }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 360px; gap:12px; padding:12px 16px; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  .view { position:relative; background:#000; aspect-ratio:16/9; width:100%; }
+  canvas { width:100%; height:100%; display:block; cursor:crosshair; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; align-items:center; }
+  .pad { display:grid; grid-template-columns: repeat(3, 44px); gap:4px; }
+  .pad button { padding:8px 0; }
+  .panel { background:var(--panel); border-radius:6px; padding:10px 12px; margin-bottom:10px; }
+  .panel h2 { font-size:13px; margin:0 0 6px; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric: tabular-nums; }
+  td { padding:2px 0; } td:last-child { text-align:right; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:3px; font-weight:600; font-size:12px; }
+  .s-idle { background:#555; } .s-searching { background:#7d3c98; } .s-tracking { background:var(--green); }
+  .s-lost { background:#666; } .s-no_video { background:var(--red); }
+  .problem.warning { color:var(--yellow); } .problem.error { color:#ff6b5b; }
+  pre { margin:0; max-height:220px; overflow:auto; font-size:11px; color:var(--dim); white-space:pre-wrap; }
+  select { background:var(--ctl); color:var(--text); border:1px solid var(--line); padding:7px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TrackXen</h1><span style="color:var(--dim)">Phase 2 test page</span>
+  <span class="grow"></span>
+  <span id="conn" class="badge s-lost">connecting</span>
+  <button class="stop" id="stopAll" title="Stop tracking and stop every camera">STOP ALL</button>
+</header>
+<main>
+  <section>
+    <div class="view"><canvas id="view" width="1280" height="720"></canvas></div>
+    <div class="bar">
+      <select id="camera"></select>
+      <span id="state" class="badge s-idle">idle</span>
+      <button id="tracking">Tracking OFF</button>
+      <button id="clear">Clear target</button>
+      <button id="autozoom">Auto zoom OFF</button>
+      <span style="color:var(--dim)">Click a person to track them.</span>
+    </div>
+    <div class="bar">
+      <div class="pad">
+        <span></span><button data-tilt="1">▲</button><span></span>
+        <button data-pan="-1">◀</button><span></span><button data-pan="1">▶</button>
+        <span></span><button data-tilt="-1">▼</button><span></span>
+      </div>
+      <div class="pad" style="grid-template-columns:repeat(1,44px)">
+        <button data-zoom="1">T</button><button data-zoom="-1">W</button>
+      </div>
+      <label style="color:var(--dim)">Manual speed <input id="speed" type="range" min="1" max="12" value="4"></label>
+    </div>
+  </section>
+  <aside>
+    <div class="panel"><h2>Camera</h2><table id="camStats"></table></div>
+    <div class="panel"><h2>PC (measured)</h2><table id="pcStats"></table></div>
+    <div class="panel"><h2>Problems</h2><div id="problems">none</div></div>
+    <div class="panel"><h2>Log file</h2><pre id="log"></pre></div>
+  </aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const canvas = $("view"), ctx = canvas.getContext("2d");
+let ws, status = null, cam = null, images = {};
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { $("conn").textContent = "connected"; $("conn").className = "badge s-tracking"; };
+  ws.onclose = () => { $("conn").textContent = "disconnected"; $("conn").className = "badge s-no_video"; setTimeout(connect, 1000); };
+  ws.onmessage = async (ev) => {
+    if (typeof ev.data === "string") {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "status") { status = msg; render(); }
+      return;
+    }
+    const bytes = new Uint8Array(ev.data), nl = bytes.indexOf(10);
+    const id = new TextDecoder().decode(bytes.slice(0, nl));
+    const bmp = await createImageBitmap(new Blob([bytes.slice(nl + 1)], { type: "image/jpeg" }));
+    if (images[id]) images[id].close();
+    images[id] = bmp;
+  };
+}
+const send = (cmd) => ws && ws.readyState === 1 && ws.send(JSON.stringify(cmd));
+const camStatus = () => status && status.cameras.find((c) => c.id === cam);
+
+function draw() {
+  const c = camStatus(), img = images[cam];
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (img) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  if (c && c.frame.width) {
+    const sx = canvas.width / c.frame.width, sy = canvas.height / c.frame.height;
+    const f = c.framing;
+    ctx.setLineDash([6, 6]); ctx.strokeStyle = "rgba(91,192,235,.8)"; ctx.lineWidth = 2;
+    ctx.strokeRect((f.anchor_x - f.dead_zone_x) * canvas.width, (f.anchor_y - f.dead_zone_y) * canvas.height,
+                   2 * f.dead_zone_x * canvas.width, 2 * f.dead_zone_y * canvas.height);
+    ctx.setLineDash([]);
+    for (const t of c.tracks) {
+      const [x1, y1, x2, y2] = t.box, target = t.id === c.target;
+      ctx.strokeStyle = target ? "#d9730d" : "rgba(255,255,255,.6)"; ctx.lineWidth = target ? 4 : 2;
+      ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
+      ctx.fillStyle = target ? "#d9730d" : "rgba(0,0,0,.6)";
+      ctx.fillRect(x1 * sx, y1 * sy - 22, 70, 22);
+      ctx.fillStyle = "#fff"; ctx.font = "15px system-ui";
+      ctx.fillText(`${target ? "TARGET " : ""}${t.id}`, x1 * sx + 5, y1 * sy - 6);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+
+const fmt = (v, d = 1) => (v === undefined || v === null || Number.isNaN(v)) ? "–" : Number(v).toFixed(d);
+// text from the settings or the cameras (names, messages) goes into HTML only escaped
+const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+function rows(el, list) { el.innerHTML = list.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join(""); }
+
+function render() {
+  const sel = $("camera");
+  if (sel.options.length !== status.cameras.length) {
+    sel.innerHTML = status.cameras.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+    if (!cam && status.cameras.length) cam = status.cameras[0].id;
+  }
+  const c = camStatus(); if (!c) return;
+  $("state").textContent = c.state.replace("_", " "); $("state").className = `badge s-${c.state}`;
+  $("tracking").textContent = `Tracking ${c.tracking ? "ON" : "OFF"}`; $("tracking").classList.toggle("on", c.tracking);
+  $("autozoom").textContent = `Auto zoom ${c.framing.auto_zoom ? "ON" : "OFF"}`; $("autozoom").classList.toggle("on", c.framing.auto_zoom);
+  const a = (status.stats && status.stats.app) || {}, k = (n) => a[`${c.id}.${n}`];
+  rows($("camStats"), [
+    ["State / target", `${c.state} / ${c.target ?? "–"}`],
+    ["Engine", status.engine || "–"],
+    ["Source video", `${fmt(k("source_fps"))} fps, gaps ${(c.source.gaps_ms || []).join(" ")} ms`],
+    ["NDI dropped (total)", `${k("ndi_dropped_total") ?? "–"} of ${k("ndi_frames_total") ?? "–"}`],
+    ["Detections", `${fmt(k("detections_per_s"))} /s, skipped ${fmt(k("skipped_frames_per_s"))} /s`],
+    ["Detect time p50 / p95", `${fmt(k("detect_ms_p50"))} / ${fmt(k("detect_ms_p95"))} ms`],
+    ["Frame → result p50 / p95", `${fmt(k("pipeline_ms_p50"))} / ${fmt(k("pipeline_ms_p95"))} ms`],
+    ["VISCA round trip p50 / max", `${fmt(k("visca_rtt_ms_p50"))} / ${fmt(k("visca_rtt_ms_max"))} ms`],
+    ["VISCA commands / errors", `${fmt(k("visca_commands_per_s"))} / ${fmt(k("visca_errors_per_s"))} per s`],
+    ["FreeD", `${fmt(k("freed_packets_per_s"), 0)} /s, age ${fmt(c.freed_age * 1000, 0)} ms`],
+    ["Pan / tilt / FOV", c.pose ? `${fmt(c.pose.pan, 2)}° / ${fmt(c.pose.tilt, 2)}° / ${fmt(c.pose.hfov)}°` : "–"],
+    ["Command (pan, tilt, zoom)", c.command.join(", ")],
+  ]);
+  const s = status.stats || {}, g = (s.gpus || [])[0] || {}, e = (s.gpu_engines || []).find((x) => x.app_memory_mb) || {};
+  rows($("pcStats"), [
+    ["CPU total / this app", `${fmt(s.cpu_percent, 0)}% / ${fmt(s.app_cpu_percent)}%`],
+    ["Memory total / this app", `${fmt(s.memory_percent, 0)}% / ${s.app_memory_mb ?? "–"} MB`],
+    ["GPU (NVIDIA) / this app", `${g.load_percent ?? "–"}% / ${g.app_load_percent ?? "–"}%`],
+    ["GPU memory / temperature", g.name ? `${fmt(g.memory_used_mb / 1024)} of ${fmt(g.memory_total_mb / 1024)} GB / ${g.temperature_c}°C` : "–"],
+    ["This app's video memory", `${e.app_memory_mb ?? "–"} MB`],
+    ["3D / video engines (Windows)", e.engine_types ? Object.entries(e.engine_types).map(([n, v]) => `${n} ${fmt(v, 0)}%`).join(", ") || "idle" : "–"],
+    ["Network in / out", `${fmt(s.net_rx_mbps)} / ${fmt(s.net_tx_mbps)} Mbit/s`],
+  ]);
+  $("problems").innerHTML = status.problems.length
+    ? status.problems.map((p) => `<div class="problem ${esc(p.level)}">${esc(p.source)}: ${esc(p.message)}</div>`).join("") : "none";
+}
+
+$("camera").onchange = (e) => { cam = e.target.value; };
+canvas.onclick = (e) => {
+  const r = canvas.getBoundingClientRect();
+  send({ type: "select", camera: cam, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height });
+};
+$("tracking").onclick = () => { const c = camStatus(); send({ type: "tracking", camera: cam, on: !(c && c.tracking) }); };
+$("clear").onclick = () => send({ type: "clear_target", camera: cam });
+$("autozoom").onclick = () => { const c = camStatus(); send({ type: "framing", camera: cam, auto_zoom: !(c && c.framing.auto_zoom) }); };
+$("stopAll").onclick = () => send({ type: "stop_all" });
+document.querySelectorAll(".pad button").forEach((b) => {
+  let timer = null;
+  const go = () => {
+    const sp = +$("speed").value;
+    send({ type: "manual", camera: cam, pan: (+b.dataset.pan || 0) * sp, tilt: (+b.dataset.tilt || 0) * sp,
+           zoom: (+b.dataset.zoom || 0) * Math.min(sp, 8) });
+  };
+  const start = (ev) => { ev.preventDefault(); go(); timer = setInterval(go, 150); };
+  const end = () => {
+    if (timer === null) return;
+    clearInterval(timer); timer = null;
+    send({ type: "manual", camera: cam, pan: 0, tilt: 0, zoom: 0 });
+  };
+  b.addEventListener("pointerdown", start); b.addEventListener("pointerup", end); b.addEventListener("pointerleave", end);
+});
+async function pollLog() {
+  try { $("log").textContent = await (await fetch("/api/log?lines=60")).text(); $("log").scrollTop = 1e9; } catch {}
+  setTimeout(pollLog, 3000);
+}
+connect(); draw(); pollLog();
+</script>
+</body>
+</html>
