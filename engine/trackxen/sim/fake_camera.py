@@ -33,21 +33,22 @@ def speed_to_dps(speed: int) -> float:
     return SPEED_TABLE[max(1, min(len(SPEED_TABLE), speed)) - 1]
 
 
-def ptzoptics_settings() -> dict:
+def ptzoptics_settings(model: str = "ptzoptics_g2") -> dict:
     """FakeCamera arguments for a PTZOptics G2-like camera, from TrackXen's own defaults for that
-    type (core/camera_models.py), so the simulator and TrackXen agree on units and speeds."""
+    type (core/camera_models.py), so the simulator and TrackXen agree on units, speeds and zoom range."""
     from trackxen.core.camera_models import MODELS
 
-    m = MODELS["ptzoptics_g2"]
-    return {"plain": True, "pan_units": m["units_per_degree"], "tilt_units": m["tilt_units_per_degree"],
-            "pan_table": m["pan_speeds"], "tilt_table": m["tilt_speeds"]}
+    m = MODELS[model]
+    return {"plain": True, "pan_units": m["units_per_degree"],
+            "tilt_units": m["tilt_units_per_degree"] or m["units_per_degree"],
+            "pan_table": m["pan_speeds"], "tilt_table": m["tilt_speeds"], "zoom_max": m["lens"]["zoom_max"]}
 
 
 @dataclass
 class CameraState:
     pan: float = 0.0  # degrees
     tilt: float = 0.0
-    zoom: float = 0.0  # 0..ZOOM_MAX
+    zoom: float = 0.0  # 0..the camera's zoom_max
     pan_rate: float = 0.0  # degrees per second
     tilt_rate: float = 0.0
     zoom_rate: float = 0.0  # units per second
@@ -64,12 +65,14 @@ class FakeCamera(asyncio.DatagramProtocol):
     def __init__(self, freed_target: tuple[str, int] | None = None, camera_id: int = 1,
                  freed_rate: float = 50.0, command_delay: float = 0.0, plain: bool = False,
                  pan_units: float = UNITS_PER_DEGREE, tilt_units: float = UNITS_PER_DEGREE,
-                 pan_table: list[float] | None = None, tilt_table: list[float] | None = None):
+                 pan_table: list[float] | None = None, tilt_table: list[float] | None = None,
+                 zoom_max: float = ZOOM_MAX):
         self.state = CameraState()
         self.freed_target, self.camera_id, self.freed_rate = freed_target, camera_id, freed_rate
         self.command_delay = command_delay
         self.plain = plain  # VISCA without the 8-byte IP header (PTZOptics on UDP 1259)
         self.pan_units, self.tilt_units = pan_units, tilt_units
+        self.zoom_max = zoom_max  # the zoom position at full tele (a PTZOptics G2 20X stops at 15070)
         self.pan_table, self.tilt_table = pan_table or SPEED_TABLE, tilt_table or SPEED_TABLE
         self.transport: asyncio.DatagramTransport | None = None
         self.received: list[bytes] = []
@@ -183,7 +186,7 @@ class FakeCamera(asyncio.DatagramProtocol):
             s.zoom_rate = 0.0 if p == 0 else (800.0 * ((p & 0x0F) + 1)) * (1 if p & 0xF0 == 0x20 else -1)
             self._reply(addr, visca.PT_REPLY, done, seq)
         elif cmd == b"\x01\x04\x47":  # zoom direct
-            s.zoom_rate, s.zoom_target = 0.0, float(visca.decode_position(msg[4:8]))
+            s.zoom_rate, s.zoom_target = 0.0, max(0.0, min(self.zoom_max, float(visca.decode_position(msg[4:8]))))
             self._reply(addr, visca.PT_REPLY, done, seq)
         elif cmd == b"\x01\x04\x3f":  # preset: 01 = set, 02 = recall
             if msg[4] == 0x01:
@@ -234,7 +237,7 @@ class FakeCamera(asyncio.DatagramProtocol):
             s.zoom += math.copysign(min(abs(delta), ZOOM_DIRECT_RATE * dt), delta)
             if abs(s.zoom - s.zoom_target) < 1e-6:
                 s.zoom_target = None
-        s.zoom = max(0.0, min(ZOOM_MAX, s.zoom + s.zoom_rate * dt))
+        s.zoom = max(0.0, min(self.zoom_max, s.zoom + s.zoom_rate * dt))
         self.history.append((time.monotonic(), s.pan, s.tilt, s.zoom))
 
     async def _send_freed(self) -> None:

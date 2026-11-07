@@ -37,3 +37,6 @@ engine/trackxen/core/static/app/
 # Setup program (packaging/build.ps1)
 installer-output/
 engine/trackxen/_build.py
+
+# Stock video for the realistic simulator demo (sim_camera.py --footage)
+demo-footage/

@@ -14,6 +14,9 @@
     editable?: AreaKind[]; shown?: AreaKind[] | null;
   } = $props();
 
+  // the camera picture's own shape (16:9 until the first picture tells): the whole picture fills the canvas,
+  // never cropped or stretched
+  let shape = $derived(camera.frame?.width && camera.frame?.height ? `${camera.frame.width} / ${camera.frame.height}` : "16 / 9");
   let canvas: HTMLCanvasElement;
   type Drag =
     | { what: "area"; area: AreaInView; mode: "move" | "l" | "r" | "t" | "b" | "lt" | "rt" | "lb" | "rb"; x0: number; y0: number; rect: [number, number, number, number] }
@@ -356,10 +359,10 @@
 </script>
 
 <canvas bind:this={canvas} {onpointerdown} {onpointermove} {onpointerup} onpointercancel={() => { drag = null; override = null; }}
-        class:interactive class="mode-{ui.mouseMode}" aria-label="{camera.name} live picture"></canvas>
+        class:interactive class="mode-{ui.mouseMode}" style:aspect-ratio={shape} aria-label="{camera.name} live picture"></canvas>
 
 <style>
-  canvas { width: 100%; aspect-ratio: 16 / 9; display: block; background: #000; touch-action: manipulation; }
+  canvas { width: 100%; display: block; background: #000; touch-action: manipulation; }
   canvas.mode-area, canvas.mode-silhouette { touch-action: none; }
   canvas.interactive { cursor: crosshair; }
   canvas.interactive.mode-area, canvas.interactive.mode-silhouette { cursor: move; }

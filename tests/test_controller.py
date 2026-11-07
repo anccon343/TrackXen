@@ -4,8 +4,8 @@ from collections import deque
 import pytest
 
 from trackxen.control.camera import Pose
-from trackxen.control.controller import (Controller, Framing, Motion, Observation, SpeedTable, cut_at_bottom,
-                                         head_point)
+from trackxen.control.controller import (MIN_DEAD_ZONE, SLOWEST_STEP_COAST, Controller, Framing, Motion, Observation,
+                                         SpeedTable, cut_at_bottom, head_point)
 from trackxen.control.kalman import AngleKalman
 from trackxen.control.lens import Lens
 
@@ -160,10 +160,10 @@ def test_constrained_aim_stops_at_the_limit():
 
 def ptz_lens_speeds() -> tuple[Lens, SpeedTable]:
     from trackxen.core.camera_models import MODELS
+    from trackxen.core.config import LensConfig
 
     m = MODELS["ptzoptics_g2"]
-    return Lens(m["lens"]["hfov_wide"], m["lens"]["hfov_tele"], m["lens"]["zoom_max"]), SpeedTable(m["pan_speeds"],
-                                                                                                    m["tilt_speeds"])
+    return Lens.from_config(LensConfig(**m["lens"])), SpeedTable(m["pan_speeds"], m["tilt_speeds"])
 
 
 def ptz_controller(hfov: float, motion: Motion | None = None, framing: Framing | None = None):
@@ -218,11 +218,17 @@ def test_closed_loop_ptzoptics_tight_shot_settles_and_zooms():
     """N14 in a closed loop with camera latency: the tilt settles inside the dead zone and auto zoom works."""
     lens, speeds = ptz_lens_speeds()
     framing = Framing(display_size=True, auto_zoom=True, target_height=0.6)
-    errors, commands, _, _ = simulate(lambda t: (0.5, 0.3), seconds=10, framing=framing, start_zoom_hfov=8.0,
-                                      person_deg=1.5, command_delay=0.1, video_delay=0.1, lens=lens, speeds=speeds)
+    errors, commands, zooms, _ = simulate(lambda t: (0.5, 0.3), seconds=10, framing=framing, start_zoom_hfov=8.0,
+                                          person_deg=1.5, command_delay=0.1, video_delay=0.1, lens=lens, speeds=speeds)
     assert any(c[3] > 0 for c in commands)  # zoomed in towards the display size
     _, ex, ey = errors[-1]
-    assert abs(ex) < framing.dead_zone_x * W and abs(ey) < framing.dead_zone_y * H
+    # the dead zone the controller uses: the framing's share of the picture, but never less than what the slowest
+    # step coasts (SLOWEST_STEP_COAST; a G2's step 1 is 1.74 deg/s, wider than 6 % of the picture in a tight shot)
+    hfov, vfov = lens.hfov(zooms[-1]), lens.vfov(zooms[-1])
+    dead = (max(framing.dead_zone_x * hfov, MIN_DEAD_ZONE, speeds.pan[0] * SLOWEST_STEP_COAST),
+            max(framing.dead_zone_y * vfov, MIN_DEAD_ZONE, speeds.tilt[0] * SLOWEST_STEP_COAST))
+    edge_x, edge_y = lens.angles_to_pixel(dead[0], -dead[1], W, H, zooms[-1])
+    assert abs(ex) < edge_x - W / 2 and abs(ey) < edge_y - H / 2
 
 
 def test_halting_area_off_tight_shot_comes_to_rest_on_a_still_person():
@@ -365,7 +371,8 @@ def test_feed_forward_follows_a_low_passed_person_speed():
 
 def test_the_dead_zone_is_never_smaller_than_the_camera_can_hold():
     """C5: Halting Area off (dead zone 0.01 of the picture) at a tight shot: at least 0.15 degrees (a walking head
-    bobs), and at least what the slowest step coasts in 0.27 s (PTZOptics: 1.7 deg/s, so 0.46 degrees)."""
+    bobs), and at least what the slowest step coasts in 0.27 s (PTZOptics G2 20X: 1.74 deg/s pan, 1.82 tilt, so
+    0.47 and 0.49 degrees)."""
     tiny = Framing(dead_zone_x=0.01, dead_zone_y=0.01)
     ctrl = Controller(framing=tiny)
     pose = Pose(0.0, 0.0, 0.0, ctrl.lens.zoom_for_hfov(8.0))
@@ -373,7 +380,9 @@ def test_the_dead_zone_is_never_smaller_than_the_camera_can_hold():
     assert ctrl.command(0.0, pose).debug["dead_zone"] == [0.15, 0.15]
     ctrl, pose = ptz_controller(8.0, framing=tiny)
     ctrl.observe(Observation(0.0, W / 2, 0.3 * H, 400, W, H), pose)
-    assert ctrl.command(0.0, pose).debug["dead_zone"] == pytest.approx([0.459, 0.459], abs=0.001)
+    coast = [ctrl.speeds.pan[0] * SLOWEST_STEP_COAST, ctrl.speeds.tilt[0] * SLOWEST_STEP_COAST]
+    assert ctrl.command(0.0, pose).debug["dead_zone"] == pytest.approx(coast, abs=0.001)
+    assert coast == pytest.approx([0.47, 0.491], abs=0.001)
     wide = Controller()  # an ordinary dead zone is left as it is
     pose = Pose(0.0, 0.0, 0.0, wide.lens.zoom_for_hfov(40.0))
     wide.observe(Observation(0.0, W / 2, 0.3 * H, 400, W, H), pose)

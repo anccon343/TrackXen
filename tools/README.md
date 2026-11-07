@@ -35,6 +35,8 @@ stop command, also when you press Ctrl+C. Don't run movement tests while a camer
 | `visca_probe.py HOST zoom-range --yes` | Zoom position at full wide and full tele | **yes** (zoom) |
 | `stream_probe.py rtsp://IP:554/1` | A camera's own network stream: size, codec, fps, gaps, decode time, damaged frames | no |
 | `stream_probe.py URL --delay IP --yes` | ... and its video delay (pans the camera a little) | **yes** |
+| `lens_probe.py HOST --yes lens` | A network camera's field of view at every zoom position, from its own picture: prints the camera type's `zoom_table` (point it at a far, detailed target first) | **yes** |
+| `lens_probe.py HOST --yes delay` | The network camera's video delay and how soon it reacts to a command (more robust than `stream_probe --delay`) | **yes** |
 | `freed_probe.py --port 40001` | Shows FreeD rate and values | no |
 | `xair_meters.py [HOST]` | Live input levels and channel names from the MR18 | no |
 | `vmix_tally.py HOST` | vMix inputs and live Program/Preview changes | no |
@@ -90,7 +92,7 @@ Then, in a second window:
 
 | Tool | What it does |
 |---|---|
-| `sim_camera.py` | A virtual P400 (VISCA, FreeD, NDI video of a stage with a walking speaker); `--ptzoptics`: behaves like a PTZOptics G2 (plain VISCA, no FreeD; with `python -m trackxen --sim --sim-ptzoptics N`) |
+| `sim_camera.py` | A virtual P400 (VISCA, FreeD, NDI video of a stage with a walking speaker); `--ptzoptics`: behaves like a PTZOptics G2 (plain VISCA, no FreeD; with `python -m trackxen --sim --sim-ptzoptics N`); `--footage clip.mp4`: real people instead of the drawn stage (the camera pans and zooms over the video; the demo uses a free Pexels clip in `demo-footage/`, not in git) |
 | `sim_test.py` | Locks onto the speaker in TrackXen and measures framing, visibility and timing |
 | `sim_scenarios.py [names]` | The tracking rules end to end: auto select, fixed / halting areas, shooting range, manual operation, preset link, multi-person, registered faces, on-air motion (`onair`, vMix tally) and audio-follow (`audio`, MR18). `onair` and `audio` also need `fake_devices.py --no-camera --vmix-input "TRACKXEN SIM 1" --cycle 8` in another window. All 10 take about 5-6 minutes |
 | `export_models.py` | Exports the YOLO26 pose models to ONNX (needs PyTorch; run in its own process) |

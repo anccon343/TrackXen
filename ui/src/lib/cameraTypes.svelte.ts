@@ -1,4 +1,4 @@
-// Camera types (engine/trackxen/core/camera_models.py): BirdDog P400, PTZOptics G2, other VISCA cameras.
+// Camera types (engine/trackxen/core/camera_models.py): BirdDog P400, PTZOptics G2 20X and 12X, other VISCA cameras.
 import { getJSON, postJSON } from "./live.svelte";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -10,6 +10,10 @@ export interface CameraType {
   estimate: string[]; // values from the data sheet, to be measured with the lab tools
   defaults: Camera;
 }
+
+// A network stream that brings fewer pictures than this a second: the camera can't keep up with its own stream
+// (a PTZOptics G2 at 12 Mbps brings 18-21 a second, seconds late; at 4 Mbps 25).
+const SLOW_STREAM_FPS = 22;
 
 export interface CameraTest {
   visca: { ok: boolean; error?: string; rtt_ms?: number; pan?: number; tilt?: number; zoom?: number } | null;
@@ -84,5 +88,8 @@ export function describeTest(t: CameraTest): string[] {
     ? `Video: ${t.video.width}×${t.video.height} ${t.video.codec?.toUpperCase()}, ${t.video.fps} fps, decoding ${t.video.decode_ms} ms per frame` +
       (t.video.damaged ? `, ${t.video.damaged} damaged frames` : "")
     : `Video: ${t.video.error}`);
+  if (t.video?.ok && t.video.url && (t.video.fps ?? 0) < SLOW_STREAM_FPS)
+    out.push("The camera can't keep up with its stream (its picture arrives late). In the camera's web page, " +
+             "set the main stream to 4 Mbps CBR and restart the camera (user guide: PTZOptics cameras).");
   return out;
 }

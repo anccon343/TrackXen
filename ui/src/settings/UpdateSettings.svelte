@@ -28,19 +28,21 @@
     finds the latest one; Install closes TrackXen, stops the cameras, installs it and starts TrackXen again.</p>
 
   <div class="token">
-    <label for="update-token">GitHub access token {s.token_set ? "(saved)" : "(needed: the repository is private)"}</label>
+    <label for="update-token">GitHub access token {s.token_set ? "(saved)" : "(optional)"}</label>
     <div class="row">
       <input id="update-token" type="password" autocomplete="off" bind:value={token}
              placeholder={s.token_set ? "saved: enter a new one to replace it" : "github_pat_…"} />
       <button disabled={updates.busy || !token.trim()} onclick={saveToken}>Save token</button>
       {#if s.token_set}<button disabled={updates.busy} onclick={() => updates.saveToken("")}>Remove</button>{/if}
     </div>
-    <p class="dim small">On GitHub: Settings → Developer settings → Fine-grained tokens → Generate new token. Repository
-      access: only TrackXen; Permissions: Contents, read-only. The token stays on this PC (not in settings or show files).</p>
+    <p class="dim small">Not needed: the repository is public. Only for a private copy of it, or when GitHub limits the checks
+      from this network (about 60 an hour). On GitHub: Settings → Developer settings → Fine-grained tokens → Generate new
+      token; Repository access: only TrackXen; Permissions: Contents, read-only. The token stays on this PC (not in settings
+      or show files).</p>
   </div>
 
   <div class="buttons">
-    <button class="primary" disabled={updates.busy || !s.token_set || s.state === "downloading"} onclick={() => updates.check()}>
+    <button class="primary" disabled={updates.busy || s.state === "downloading"} onclick={() => updates.check()}>
       {s.state === "checking" ? "Checking…" : "Check for updates"}</button>
   </div>
 

@@ -67,7 +67,7 @@ class Move:
 class CameraSession:
     def __init__(self, cfg: CameraConfig, link: CameraLink, counters=None, log=None):
         self.cfg, self.link, self.counters, self.log = cfg, link, counters, log
-        self.lens = Lens(cfg.lens.hfov_wide, cfg.lens.hfov_tele, cfg.lens.zoom_max)
+        self.lens = Lens.from_config(cfg.lens)
         self.controller = Controller(self.lens, SpeedTable(cfg.pan_speeds, cfg.tilt_speeds))
         self.controller.constrain = self._constrain
         self.selector = rules.AutoSelector()

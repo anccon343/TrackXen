@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { CameraStatus } from "../lib/live.svelte";
   import { slots } from "../lib/slots.svelte";
+  import { tileSizes } from "../lib/tileSizes.svelte";
   import { MOUSE_MODES, ui } from "../lib/ui.svelte";
 
   // Above the pictures: the mouse mode at the top left, View Initial Position at the
@@ -16,6 +17,9 @@
       {#each MOUSE_MODES as m}<option value={m.id}>{m.label}</option>{/each}
     </select></label>
   <span class="grow"></span>
+  {#if tileSizes.custom}
+    <button title="Every camera box back to its automatic size" onclick={() => tileSizes.reset()}>Auto size</button>
+  {/if}
   {#if camera}
     <button disabled={!slot?.initial.set} title={slot?.initial.set ? `${camera.name}: go to the initial position` : "No initial position captured yet (Setting Wizard → Initial Position)"}
             onclick={() => slots.command({ type: "view", what: "initial" }, false)}>View Initial Position</button>

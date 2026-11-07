@@ -73,6 +73,8 @@
     .cameras > :global(.list) { display: none; }
   }
   @media (max-width: 760px) {
-    .cameras, .cameras.one { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow-y: auto; }
+    /* every picture, then the panel, each as tall as it is (no scrolling boxes of their own): the page scrolls, and
+       the panel's Save bar sticks to the bottom of the screen */
+    .cameras, .cameras.one { grid-template-columns: 1fr; grid-template-rows: max-content max-content; overflow-y: auto; }
   }
 </style>

@@ -28,6 +28,7 @@ from _common import not_simulated
 
 from trackxen.control.controller import head_point
 from trackxen.control.lens import Lens
+from trackxen.core.config import LensConfig
 from trackxen.devices import visca
 
 SLOT = 4  # App Settings 5: scratch space for these tests
@@ -372,7 +373,7 @@ def main(args) -> int:
               "drives real cameras. Add --yes to run the scenarios on it anyway.")
         return 2
     cam_cfg = next(c for c in config["cameras"] if c["id"] == api.camera)
-    LENS = Lens(cam_cfg["lens"]["hfov_wide"], cam_cfg["lens"]["hfov_tele"], cam_cfg["lens"]["zoom_max"])
+    LENS = Lens.from_config(LensConfig(**cam_cfg["lens"]))
     CAMERA.update(host=cam_cfg["host"] or "127.0.0.1", port=cam_cfg["visca_port"],
                   transport=cam_cfg.get("visca_transport", "sony"))
     print(f"camera {api.camera}: {cam_cfg.get('model', 'birddog_p400')}, VISCA {cam_cfg.get('visca_transport', 'sony')}, "

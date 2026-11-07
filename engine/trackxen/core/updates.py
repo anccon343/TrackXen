@@ -8,9 +8,10 @@ Releases are made by .github/workflows/release.yml: every push to main that chan
 setup program on GitHub and publishes it as a release tagged build-<n>; that build's number is written into
 the program (trackxen/_build.py), so a newer release is one with a higher number.
 
-The repository is private, so reading its releases needs a GitHub access token (fine-grained, read-only
-"Contents" on this repository). It is kept in update.json in the data folder, like the PIN in access.json:
-never in settings.json, a show file, the log or an API answer.
+The repository is public, so its releases are read without a token. A GitHub access token (fine-grained,
+read-only "Contents") is optional: for a private copy of the repository, or when GitHub limits the checks of
+one network without a token (60 requests an hour). It is kept in update.json in the data folder, like the PIN
+in access.json: never in settings.json, a show file, the log or an API answer.
 """
 
 from __future__ import annotations
@@ -114,18 +115,21 @@ class Updater:
                             headers={"User-Agent": USER_AGENT, "X-GitHub-Api-Version": "2022-11-28"})
 
     def _headers(self, accept: str = "application/vnd.github+json") -> dict:
+        """The request headers: the access token only when one is saved (the repository itself is public)."""
         token = self._token()
-        if not token:
-            raise UpdateError("Enter a GitHub access token first: the repository is private.")
-        return {"Authorization": f"Bearer {token}", "Accept": accept}
+        return {"Accept": accept, **({"Authorization": f"Bearer {token}"} if token else {})}
 
-    @staticmethod
-    def _refused(status: int) -> str:
+    def _refused(self, status: int) -> str:
+        token = bool(self._token())
         if status == 401:
-            return "GitHub refused the access token: it is wrong or has expired. Make a new one."
-        if status in (403, 404):
-            return ("No release found, or the token can't read the repository (it needs read access to its "
-                    "Contents). Releases appear after a push to main has been built on GitHub.")
+            return "GitHub refused the access token: it is wrong or has expired. Make a new one, or remove it."
+        if status == 403:
+            return ("GitHub refused: too many checks from this network for now (try again in an hour)"
+                    + (", or the access token can't read the repository." if token else "."))
+        if status == 404:
+            return ("No release found. Releases appear after a push to main has been built on GitHub"
+                    + ("; or the access token can't read the repository (it needs read access to its Contents)."
+                       if token else "."))
         return f"GitHub answered {status}."
 
     def check(self) -> dict:

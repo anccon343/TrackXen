@@ -465,13 +465,13 @@ async def _run(spec: RunSpec) -> dict:
     cfg = CameraConfig(id="cam1", host="127.0.0.1", **camera_defaults(cam_kind["model"], 1))
     if spec.motion:
         cfg.motion = dataclasses.replace(cfg.motion, **spec.motion)
-    lens = Lens(cfg.lens.hfov_wide, cfg.lens.hfov_tele, cfg.lens.zoom_max)
+    lens = Lens.from_config(cfg.lens)
     plain = cfg.visca_transport != "sony"
     cam = RampCamera(freed_target=("127.0.0.1", cfg.freed_port) if cfg.freed_port else None,
                      freed_rate=cam_kind["freed_rate"] or 50.0, command_delay=cam_kind["command_delay"],
                      ramp_tau=spec.ramp_tau, reply_delay=cam_kind["reply_delay"], plain=plain,
                      pan_units=cfg.units_per_degree, tilt_units=cfg.tilt_units_per_degree or cfg.units_per_degree,
-                     pan_table=list(cfg.pan_speeds), tilt_table=list(cfg.tilt_speeds))
+                     pan_table=list(cfg.pan_speeds), tilt_table=list(cfg.tilt_speeds), zoom_max=cfg.lens.zoom_max)
     await cam.start("127.0.0.1", cfg.visca_port)
     link = CameraLink("cam1", CameraLinkConfig(
         host=cfg.host, visca_port=cfg.visca_port, freed_port=cfg.freed_port, transport=cfg.visca_transport,

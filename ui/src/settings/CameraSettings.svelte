@@ -149,13 +149,13 @@
   <Field label="VISCA port" range="1 - 65535" changed={settings.changed((c) => c.cameras[i]?.visca_port)}>
     <input type="number" min="1" max="65535" bind:value={cam.visca_port} />
   </Field>
-  {#if cam.model !== "ptzoptics_g2"}
+  {#if !cam.model?.startsWith("ptzoptics_g2")}<!-- (a G2 has no FreeD; its position is asked over VISCA) -->
     <Field label="FreeD port on this PC" range="1024 - 65535" help="Leave empty without FreeD (positions are then asked over VISCA)"
            changed={settings.changed((c) => c.cameras[i]?.freed_port)}>
       <input type="number" min="1024" max="65535" bind:value={cam.freed_port} />
     </Field>
   {/if}
-  <Field label="Video delay (s)" range="0 - 1" help={cam.video === "stream" ? "Network streams are slower than NDI: about 0.2 until measured (tools/stream_probe.py)" : "Measured by calibration; 0.08 until then"}
+  <Field label="Video delay (s)" range="0 - 1" help={cam.video === "stream" ? "Network streams are slower than NDI: a PTZOptics G2 at the recommended 4 Mbps about 0.1 (measured with tools/lens_probe.py delay)" : "Measured by calibration; 0.08 until then"}
          changed={settings.changed((c) => c.cameras[i]?.video_delay)}>
     <input type="number" min="0" max="1" step="0.01" bind:value={cam.video_delay} />
   </Field>

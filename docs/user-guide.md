@@ -36,21 +36,25 @@ Every push to `main` on GitHub builds a new setup program there (GitHub Actions,
 and publishes it as a release named after its build number. The installed TrackXen installs it from
 **Settings → System → Updates**:
 
-1. **Once per PC, an access token** (the repository is private): on GitHub, your picture → Settings
-   → Developer settings → Fine-grained tokens → Generate new token. Repository access: **Only select
-   repositories → TrackXen**; Permissions: **Contents: Read-only**; pick an expiry date. Paste it in
-   **GitHub access token** and press **Save token**. It is kept on this PC in
-   `%APPDATA%\TrackXen\update.json`, never in the settings or a show file. Make a new one when it
-   expires (TrackXen then says "GitHub refused the access token").
-2. **Check for updates** shows whether GitHub has a newer build than this one, with its notes.
-3. **Download** fetches the setup program (about 600 MB) and checks it against the checksum published
+1. **Check for updates** shows whether GitHub has a newer build than this one, with its notes. No
+   access token is needed: the repository is public.
+2. **Download** fetches the setup program (about 600 MB) and checks it against the checksum published
    with it; a file that doesn't match is not used.
-4. **Install now… → Stop TrackXen and install:** TrackXen closes (every camera stops), the setup
+3. **Install now… → Stop TrackXen and install:** TrackXen closes (every camera stops), the setup
    program installs the new version and starts TrackXen again, in about a minute. Reload the page
    then. Not while a camera is live: TrackXen refuses while vMix (or the On Air switch) has one on air.
    An install "for all users" makes Windows ask to allow the setup program.
 
 A version built by hand (`packaging\build.ps1`) counts as build 0, so any GitHub build is newer.
+
+**An access token (optional)** is only for a private copy of the repository, or when GitHub refuses
+because of too many checks from one network (about 60 an hour without a token).
+- Make one on GitHub: your picture → Settings → Developer settings → Fine-grained tokens → Generate new
+  token. Repository access: **Only select repositories → TrackXen**; Permissions: **Contents:
+  Read-only**.
+- Paste it in **GitHub access token** and press **Save token**.
+- It is kept on this PC in `%APPDATA%\TrackXen\update.json`, never in the settings or a show file.
+- **Remove** forgets it.
 
 ## 2. First start: the welcome page
 
@@ -67,38 +71,55 @@ address; Settings → Cameras shows which port each camera uses.
 A camera can also come in through an **HDMI/SDI capture card** instead of NDI: Settings → Cameras →
 "Video from: HDMI / SDI capture card" and its device number. It is still controlled over the network.
 
-### PTZOptics cameras (G2, e.g. PT20X-SDI-GY-G2)
+### PTZOptics cameras (G2: PT20X-SDI-G2, PT12X-SDI-G2)
 
 They have no NDI and no FreeD; TrackXen takes their **own network stream** (RTSP) and asks them for
 their position 20 times a second over VISCA.
 
-- **In the camera's web page** (type its IP address in a browser):
-  - VISCA over UDP on, port **1259** (the default)
-  - the RTSP stream on, without a login (the default)
-  - recommended for the least delay: H.264, 1920×1080 at 30 fps (or 1280×720 on the sub stream),
-    I-frame interval 30
-- **Settings → Cameras:** "Camera type: PTZOptics G2" fills everything in. The video comes from
-  `rtsp://<camera IP>:554/1` (main stream); **Sub stream** switches to `/2`. **Test camera** shows
-  whether it answers and what its video is like.
+- **Camera type** (Settings → Cameras, or the welcome page): **PTZOptics G2 20X** or **PTZOptics G2 12X**.
+  - Each fills in that model's measured numbers: the field of view at every zoom position, the speed
+    of each speed step, the units per degree (14.4) and the video delay.
+  - The 12X is the wider one (67° at full wide, 12x zoom); the 20X is 58° wide with 17.5x zoom.
+- **In the camera's web page** (type its IP address in a browser and log in):
+  - Network: VISCA over UDP on, port **1259** (the default). RTSP Auth **Off** (the default).
+  - Video → First stream: **H.264, 1920×1080, 4096 kbps, CBR**, I Key Frame Interval **25**. The frame rate
+    is **25** (in a 60 Hz country: 30 and an I-frame interval of 30).
+  - Then System → **Reboot**: the stream changes take effect only after a restart.
+  - **Why 4 Mbps:** at its default 12 Mbps the G2's stream falls 1-3 seconds behind and brings only 18-21
+    pictures a second, and the camera even answers its controls slower. At 4 Mbps it brings a steady 25 a
+    second about 0.1 s late. Above 6 Mbps the camera starts to struggle again.
+  - **MJPEG doesn't work:** TrackXen needs H.264.
+- **The video** comes from `rtsp://<camera IP>:554/1` (the main stream); **Sub stream** switches to `/2`.
+- **Test camera** shows whether the camera answers and what its video is like. It warns when the stream
+  brings too few pictures: the camera then can't keep up, and its stream needs the settings above.
 - **VISCA over UDP** works next to vMix or a joystick. The camera accepts only **one** TCP control
   connection, so don't choose TCP when vMix also controls it over TCP.
-- **Once per camera, with someone there (it moves):** measure its numbers. Until then TrackXen uses
-  the data sheet's.
+- **Another PTZOptics model** (not a G2 12X or 20X): choose "Other VISCA camera" and measure its numbers
+  once, with someone there (it moves). Point it first at something 3 m or more away with plenty of fine
+  detail, not at people or screens. Clear the camera's pan/tilt limits before `calibrate`, or it measures
+  the limits instead of the end stops.
   ```
   .venv\Scripts\python tools\visca_probe.py <camera IP> --transport udp calibrate --yes
-  .venv\Scripts\python tools\visca_probe.py <camera IP> --transport udp zoom-range --yes
-  .venv\Scripts\python tools\stream_probe.py rtsp://<camera IP>:554/1 --delay <camera IP> --yes
+  .venv\Scripts\python tools\visca_probe.py <camera IP> --transport udp --yes sweep --axis pan --units-per-degree 14.4
+  .venv\Scripts\python tools\lens_probe.py <camera IP> --yes lens
+  .venv\Scripts\python tools\lens_probe.py <camera IP> --yes delay
   ```
-  Then enter the units per degree and the video delay in Settings → Cameras. Clear the camera's
-  pan/tilt limits before `calibrate`, or it measures the limits instead of the end stops.
+  `lens_probe` only compares pictures in memory; nothing is saved but the numbers.
 - A network stream has more delay than NDI or a capture card. If the PTZOptics cameras later go into
   vMix over SDI, vMix can also pass them on as NDI (vMix External Output / NDI). That is the quickest
   way into TrackXen.
 
 ## 3. Everyday use (the Cameras page)
 
-- The four pictures show what each camera sees. A red border and **LIVE** = that camera is on
+- The pictures show what each camera sees. A red border and **LIVE** = that camera is on
   Program in vMix.
+- **Box size:** drag a camera box's bottom-right corner (or click the corner and use the arrow keys).
+  - The picture always shows whole, in the camera's own shape, and a box never grows past the view.
+  - The sizes are kept on this computer or tablet only.
+  - Double-click the corner, or press **Auto size** above the pictures, to go back to the automatic size
+    (two side by side).
+  - Double-click a picture to show only that camera, large; double-click again for all of them.
+  - On a phone the boxes are as wide as the screen and the page scrolls.
 - Click a camera to control it on the right. The **Tracking** tab starts with what you need during a
   service: **Auto Tracking** on/off (also on each picture's header), the **Status** (No target
   selected, Searching, Tracking, Angle Fixed, Target lost) and the target; then On Air and Audio

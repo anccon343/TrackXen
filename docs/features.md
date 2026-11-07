@@ -173,6 +173,10 @@ to do with !.
 - **Where it runs:** on one PC for all four cameras, with GPU detection on the cameras' pictures.
 - **Where the camera points:** FreeD from the camera (BirdDog P400), or position inquiries over VISCA
   (PTZOptics, or a camera without FreeD). The areas, the composition and the smoothing all build on it.
+- **Camera types:** BirdDog P400, PTZOptics G2 20X, PTZOptics G2 12X and "Other VISCA camera". A type fills
+  in the camera's control, speeds, video delay and lens. The G2 types carry a measured zoom table: the field
+  of view at each zoom position, which the pixel-to-angle conversion and the framing use. Without a table a
+  lens curves evenly between its widest and narrowest view, which can be 25-37 % off in the middle.
 - **Moves by someone else:** TrackXen notices when another controller moves the camera and treats it
   as a manual operation.
 - **Presets recalled elsewhere:** the Camera Preset Link acts on presets recalled from TrackXen,

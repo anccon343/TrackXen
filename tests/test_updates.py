@@ -46,10 +46,21 @@ def wait(u: Updater):
         u._thread.join(10)
 
 
-def test_the_token_is_needed_kept_apart_and_never_shown(tmp_path):
+def test_no_token_is_needed_for_the_public_repository(tmp_path):
+    seen = []
+    u = updater(tmp_path, github(), seen)
+    u.current = {"version": "0.1.0.5", "build": 5, "commit": ""}
+    status = u.check()
+    assert status["state"] == "idle" and status["newer"] is True and status["token_set"] is False
+    assert "Authorization" not in seen[0].headers  # (nothing to send)
+    u.download()  # the setup program and its checksum: also without a token
+    wait(u)
+    assert u.state == "ready" and u.file.read_bytes() == SETUP
+    assert all("Authorization" not in r.headers for r in seen)
+
+
+def test_an_optional_token_is_kept_apart_and_never_shown(tmp_path):
     u = updater(tmp_path, github())
-    with pytest.raises(UpdateError, match="token"):
-        u.check()
     with pytest.raises(UpdateError):
         u.set_token("not a token!")
     u.set_token("github_pat_" + "a" * 40)
@@ -85,6 +96,12 @@ def test_a_check_that_fails_says_why(tmp_path, answers, words):
     u.set_token("ghp_" + "c" * 36)
     status = u.check()
     assert status["state"] == "error" and words in status["error"]
+
+
+def test_without_a_token_a_refusal_means_too_many_checks(tmp_path):
+    u = updater(tmp_path, {"/repos/anccon343/TrackXen/releases/latest": (403, {})})
+    status = u.check()
+    assert status["state"] == "error" and "too many checks" in status["error"] and "token" not in status["error"]
 
 
 def test_the_download_is_used_only_when_its_checksum_matches(tmp_path):

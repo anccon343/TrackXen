@@ -3,6 +3,7 @@
   python tools/sim_camera.py
   python tools/sim_camera.py --camera 2      (camera 2: "TRACKXEN SIM 2", VISCA 52382, FreeD to 40002)
   python tools/sim_camera.py --camera 3 --ptzoptics   (behaves like a PTZOptics G2: plain VISCA, no FreeD)
+  python tools/sim_camera.py --footage demo-footage/clip.mp4   (real people: pans and zooms over a video)
 
 Point the tracker at NDI source "<this PC> (TRACKXEN SIM 1)", VISCA 127.0.0.1:52381, FreeD port 40001
 (`python -m trackxen --sim --sim-cameras 4 --sim-ptzoptics 2` sets cameras 3 and 4 up as PTZOptics).
@@ -26,18 +27,25 @@ MODEL = Path(__file__).resolve().parent.parent / "models" / "yolo26n-pose-b1.onn
 
 
 def main(args) -> int:
-    if not MODEL.exists():
+    if args.footage:  # real people: pan and zoom over a video clip (sim/footage.py)
+        from trackxen.sim.footage import FootageScene
+
+        scene = FootageScene(args.footage, hfov=args.footage_hfov)
+        print(f"stage: {args.footage} ({scene.width}x{scene.height}, {scene.fps:g} fps, {args.footage_hfov:g} degrees wide)")
+    elif not MODEL.exists():
         print(f"missing {MODEL}; run tools/env_check.py first")
         return 1
+    else:
+        scene = default_scene(MODEL, ppd=args.ppd)
     lens, camera_args = None, None
-    if args.ptzoptics:  # the video stays NDI; the control is the PTZOptics kind
+    if args.ptzoptics:  # the video stays NDI; the control is the PTZOptics kind (a G2 20X: its measured lens)
         from trackxen.core.camera_models import MODELS
+        from trackxen.core.config import LensConfig
 
-        lens_cfg = MODELS["ptzoptics_g2"]["lens"]
-        lens = Lens(lens_cfg["hfov_wide"], lens_cfg["hfov_tele"], lens_cfg["zoom_max"])
-        camera_args = ptzoptics_settings()
+        lens = Lens.from_config(LensConfig(**MODELS["ptzoptics_g2"]["lens"]))
+        camera_args = ptzoptics_settings("ptzoptics_g2")
         args.freed_to = None
-    camera = VirtualCamera(default_scene(MODEL, ppd=args.ppd), ndi_name=args.name, lens=lens,
+    camera = VirtualCamera(scene, ndi_name=args.name, lens=lens,
                            freed_target=parse_host_port(args.freed_to, 40001) if args.freed_to else None,
                            fps=args.fps, video_delay=args.video_delay, command_delay=args.command_delay,
                            camera_args=camera_args)
@@ -60,6 +68,8 @@ if __name__ == "__main__":
     p.add_argument("--video-delay", type=float, default=0.08, help="seconds, like a real video pipeline")
     p.add_argument("--command-delay", type=float, default=0.03, help="seconds before a command takes effect")
     p.add_argument("--ppd", type=float, default=40.0, help="scene detail, pixels per degree")
+    p.add_argument("--footage", help="a video file of real people to pan and zoom over instead of the drawn stage")
+    p.add_argument("--footage-hfov", type=float, default=55.0, help="degrees the footage's picture spans across")
     a = p.parse_args()
     a.name = a.name or f"TRACKXEN SIM {a.camera}"
     a.visca_port = a.visca_port or 52380 + a.camera

@@ -1112,6 +1112,185 @@ the browser with the simulator.
   notices stay in `LICENSE-NOTICE.txt`. No credentials, addresses or third-party reference material are
   in the repository.
 
+## 2026-11-01: a realistic simulator demo (real people)
+
+- **Footage stage** (`sim/footage.py`, `sim_camera.py --footage clip.mp4`): the virtual camera pans and
+  zooms over a real video instead of photo cut-outs on a drawn stage.
+  - The clip is its whole world: `--footage-hfov` degrees across, centre = pan 0 / tilt 0.
+  - Its view is cut out of the current frame and scaled to 1080p (7 ms per frame).
+  - Panning adds shutter-like motion blur.
+  - The clip loops, so the people jump back at the start.
+- **The demo clip:** "A man walking back and forth while talking" by Pavel, Pexels licence (free to use
+  and change), 2560×1440, 25 fps, 30 s, 20 MB. It goes in `demo-footage/`, which is not in git.
+  - TrackXen follows the real presenter.
+  - The audience in front is seen and left alone.
+- **Tests:** `test_footage.py` (the view is cut out where the camera points; black past the clip's edge;
+  panning blurs).
+- **The first run was slow, only 3-4 tracked frames/s:** another program was using the GPU at the same time.
+
+## 2026-11-07: the first real PTZOptics G2 cameras (12X and 20X)
+
+Two cameras were measured:
+- **PT12X-SDI-WH-G2 (12x):** firmware SOC v6.2.63 / ARM v6.3.65SHI, web v1.5.5.
+- **PT20X-SDI-GY-G2 (20x).**
+
+The 12X was added from the welcome page by its IP address (Test: VISCA answers, picture 1080p). The
+measurements used the camera's own picture, compared in memory; the method is now `tools/lens_probe.py`.
+
+**VISCA (plain, UDP 1259):**
+- Both cameras answer as documented.
+- `calibrate` found the same end stops on both models: pan -2448..2448 and tilt -432..1296. That is **14.4
+  units per degree on both axes**; the tilt estimate of 13.33 was wrong.
+- `zoom-range`: the 12X zooms 0..16384, the **20X only 0..15070**.
+
+**Speed tables** (`visca_probe.py sweep` with VISCA readback, 1.0 s per pan step and 0.8 s per tilt step):
+- The two models are nearly alike.
+- Pan: step 1 is 1.74°/s and step 24 is 70°/s (12X) or 75°/s (20X). The data sheet says 100.
+- Tilt: step 20 is 43°/s (12X) or 49°/s (20X). The data sheet says 70.
+- The fastest steps include the camera's acceleration, so they read a little low.
+
+| Pan step | 1 | 4 | 8 | 12 | 16 | 20 | 24 |
+|---|---|---|---|---|---|---|---|
+| 12X °/s | 1.74 | 4.38 | 12.2 | 23.4 | 37.7 | 55.0 | 70.1 |
+| 20X °/s | 1.74 | 4.31 | 11.8 | 23.7 | 39.0 | 58.2 | 75.1 |
+
+**Lens: horizontal field of view by zoom position.** It was measured with feature matching on the camera's
+own picture:
+- **Wide end:** from a 6.5° pan against a far wall. Three repeats agreed within 0.4°.
+- **Up to tele:** the magnification step by step, from each step's scale (ORB matches and a RANSAC similarity
+  fit).
+- **Check:** at zoom 13182 a 0.42° pan gives 6.53° on the 20X, against 6.45° from the steps.
+
+| 12X zoom | 0 | 2048 | 4096 | 6144 | 8192 | 10240 | 12288 | 14336 | 16384 |
+|---|---|---|---|---|---|---|---|---|---|
+| HFOV ° | 66.7 | 56.5 | 46.5 | 36.9 | 28.0 | 20.1 | 13.3 | 8.0 | 6.31 |
+
+| 20X zoom | 0 | 1882 | 3767 | 5650 | 7535 | 9417 | 11302 | 13185 | 15067 |
+|---|---|---|---|---|---|---|---|---|---|
+| HFOV ° | 58.2 | 48.4 | 39.3 | 30.7 | 22.9 | 16.1 | 10.6 | 6.45 | 3.65 |
+
+- The 12X's ratio is 11.9x and the 20X's 17.5x.
+- The 20X's tele value rests on only 16 matched points: at full tele the picture didn't focus on the near
+  wall. Check it on a far target.
+- **TrackXen's exponential lens model is far off in the middle.** On the 12X at 8192 the model says 20.5°
+  against 28.0° measured. On the 20X at 9417 it says 10.3° against 16.1°. A measured zoom table is needed.
+
+**Network stream: at 12 Mbps the camera can't keep up.**
+
+How the delay was measured:
+- The camera pans for 1 s.
+- The delay is the time from when the VISCA position readback starts (or stops) changing to when the picture
+  starts (or stops) moving.
+- The picture's movement is each frame's shift against the first frame (phase correlation, 640×360 grey).
+- The reaction is the time from the drive command to the first changed readback.
+
+| Stream | fps | Video delay | VISCA reaction |
+|---|---|---|---|
+| 1080p25, 12 Mbps VBR (as found on the 12X) | 18-21, gaps up to 350 ms | 1.1-2.9 s, growing during a test | 550-600 ms |
+| 1080p25, 12 Mbps CBR | 18 | 1.9-2.6 s | 550 ms |
+| 1080p25, 8 Mbps CBR | 25.5, bursty | (the readback lags) | 330-450 ms |
+| 1080p25, 6 Mbps CBR | 25.3 | 0-160 ms | 170 → 420 ms within a minute |
+| **1080p25, 4 Mbps CBR** (30 s soak on both cameras) | **25.0, steady** | **about 100 ms** | **about 200 ms** |
+| 720p25, 4 Mbps CBR (sub stream) | 24.9 | about 100 ms | about 190 ms |
+| 640×360, 2 Mbps (sub stream as found) | 25 | about 94 ms | about 190 ms |
+
+- **Now set on both cameras** (in the web page, then System → Reboot; encoder changes take effect only after a
+  reboot):
+  - Main stream: 1080p25 H.264, 4 Mbps CBR, GOP 25.
+  - Sub stream: 720p25 H.264, 4 Mbps CBR, GOP 25.
+- The 20X's main stream was MJPEG, which TrackXen can't open. It was changed to H.264.
+- `stream_probe --delay` found the 2.2-2.6 s delay too, but in only 2 of 5 runs.
+
+**Not yet measured:**
+- whether the G2's SpeedByZoom slows pan/tilt at tele
+- the 20X's tele field of view on a far target
+- the delay of the SDI → vMix route
+
+**Built from these measurements (same day):**
+- **Measured zoom table:**
+  - `LensConfig.zoom_table` holds [zoom, field of view] points. They start at zoom 0 and get narrower; their
+    ends set hfov_wide, hfov_tele and zoom_max.
+  - Between the points `Lens` changes the focal length evenly on a log scale, and `zoom_for_hfov` inverts that.
+  - Without a table the old exponential curve stays, so the P400 and saved settings are unchanged.
+  - `Lens.from_config()` is used by the session, the simulator, the motion bench and the scenario tool.
+- **Camera types:**
+  - `ptzoptics_g2` is now "PTZOptics G2 20X", with its measured speeds, zoom 0..15070 and zoom table. The key
+    is unchanged, so saved settings keep working.
+  - New `ptzoptics_g2_12x`, "PTZOptics G2 12X".
+  - Both: 14.4 units per degree on both axes, video delay 0.10 s, and the stream settings in their "about".
+  - `camera_defaults()` deep-copies, so cameras never share a type's lists.
+- **UI:**
+  - The FreeD port is hidden for both G2 types.
+  - Test camera warns below 22 pictures a second ("set the stream to 4 Mbps CBR").
+  - The 12X appears in the type lists by itself.
+- **Simulator:** `FakeCamera(zoom_max=...)`, and `ptzoptics_settings(model)` follows the type's zoom range.
+- **`tools/lens_probe.py`:**
+  - `lens` gives the zoom table from the camera's own picture.
+  - `delay` gives the video delay and the reaction time.
+  - It moves the camera only with `--yes`, and nothing but numbers is saved.
+  - **Tried on the real cameras.** On the 20X at a farther target (about 4 m), `lens` gave 57.8° at full wide
+    and every step up to zoom 13182 within 1-3 % of the table. The last step (full tele) again had too few
+    matched points, so the tool now ends the table there and says so.
+  - `delay` on the 12X gave a video delay of 0.093 s and a reaction of 227 ms.
+- **Tests:**
+  - `test_lens.py`: the table, the inverse, the ends, refused tables and old settings.
+  - The G2 tests now use the measured values.
+  - A closed-loop test failed by 0.2 px: the person was 115.4 px off with a nominal dead zone of 115.2 px. The
+    cause is the G2's slowest step, now 1.74°/s: what it coasts sets the dead zone in a tight shot, so the test
+    now checks the dead zone the controller really uses.
+  - 496 tests pass; ruff and svelte-check are clean.
+- **Motion bench** (`--check`, standard cases):
+  - All limits hold before and after.
+  - The G2 cases got calmer with the measured speed steps. Speed changes dropped from 2.7-3.6 to 0.8-1.3 a
+    second, and starts in the slow tight walk from 11.2 to 4.7 a minute. Framing stayed the same or got a
+    little better: on-air tight walk e_p95 6.61 → 5.97 %.
+  - **With the measured reaction:** the bench simulates the G2 reacting in 0.05 s. At the real G2's 0.15 s
+    (a one-off run) all limits still hold, but framing loosens: on-air tight walk e_p95 7.37 %, standing
+    7.02 %. The bench's simulated reaction is not changed.
+
+## 2026-11-07: updates without an access token
+
+The repository is public now, so Settings → System → Updates reads its releases without a token.
+- `core/updates.py` sends the token only when one is saved; it stays for a private copy of the repository.
+- A 403 without a token says "too many checks from this network": GitHub allows about 60 an hour without
+  one.
+- The page calls the token optional, and Check for updates no longer waits for one.
+- Tests: a check and a download without a token send no Authorization header; a refusal without a token is
+  explained.
+
+## 2026-11-07: resizable camera boxes, whole pictures
+
+The camera boxes on the Cameras page can now be resized, each picture always shows whole, and the empty
+"Not set up" boxes are gone.
+- **Resizing:**
+  - Each box has a grip at its bottom-right corner (`CameraTile.svelte`).
+  - Dragging picks the width that puts the box's corner nearest to the pointer; the height follows the
+    picture's shape.
+  - The arrow keys change the size by 40 px.
+  - Double-clicking the grip goes back to the automatic size.
+- **Sizes are kept per camera in this browser only** (`lib/tileSizes.svelte.ts`, localStorage
+  `trackxen.tileSizes`). "Auto size" in the toolbar resets them all.
+- **Layout (`MultiView.svelte`):**
+  - The boxes wrap, two to a row by default.
+  - On a large screen the view is a size container, so no box grows taller than the view and its whole
+    picture always fits.
+  - The empty boxes are gone.
+- **The picture's shape comes from the camera** (`camera.frame`), not a fixed 16:9, so a 4:3 source is
+  neither stretched nor cropped.
+- **Phone:**
+  - The pictures used to sit in a scrolling box of their own, half the screen tall, so the second camera was
+    hidden. The two rows are now as tall as their content and the page scrolls.
+  - The panel isn't a scrolling box there, so its Save bar sticks to the bottom of the screen.
+- **Checked in the browser** with two G2 cameras (showing their last pictures):
+  - The empty boxes are gone.
+  - A drag took a box from 425 to 663 px; the canvas stayed 1.778.
+  - The size survived a reload.
+  - A drag past the edge stopped at the view's width (845 px).
+  - In a 1800×600 view the kept 845 px showed as 607 px, so the whole picture fit.
+  - The arrow keys, the grip's double-click, Auto size and the large one-camera view all worked.
+  - At phone size both cameras showed whole and the page scrolled.
+  - svelte-check is clean.
+
 ## Audits
 
 - **End of Phase 2:** structure OK. Fixed: camera loops that could die silently; missing Origin check;

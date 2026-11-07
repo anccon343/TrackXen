@@ -51,9 +51,21 @@ class LensConfig(FiniteModel):
     hfov_wide: float = Field(60.0, gt=0.0, lt=180.0)
     hfov_tele: float = Field(3.2, gt=0.0)
     zoom_max: float = Field(16384.0, gt=0.0)
+    # Measured horizontal field of view by zoom position (tools/lens_probe.py): [[zoom, degrees], ...] from zoom 0
+    # up, narrower each time. Its ends set the three values above. Empty: an exponential curve between the ends.
+    zoom_table: list[tuple[float, float]] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def _zooms_in(self) -> LensConfig:
+        table = self.zoom_table
+        if table:
+            if len(table) < 2 or table[0][0] != 0:
+                raise bad_value("the zoom table needs at least two points, the first at zoom 0")
+            if any(z1 <= z0 for (z0, _), (z1, _) in zip(table, table[1:])):
+                raise bad_value("the zoom table's zoom positions must rise")
+            if not all(0.0 < h < 180.0 for _, h in table) or any(h1 >= h0 for (_, h0), (_, h1) in zip(table, table[1:])):
+                raise bad_value("the zoom table's field of view must get narrower, between 0 and 180 degrees")
+            self.hfov_wide, self.hfov_tele, self.zoom_max = table[0][1], table[-1][1], table[-1][0]
         if self.hfov_tele >= self.hfov_wide:
             raise bad_value("the lens must be narrower at full zoom: hfov_tele below hfov_wide")
         return self
@@ -69,7 +81,7 @@ class FaceRef(FiniteModel):
 class CameraConfig(FiniteModel):
     id: str = "cam1"
     name: str = "Camera 1"
-    model: Literal["birddog_p400", "ptzoptics_g2", "other"] = "birddog_p400"  # core/camera_models.py
+    model: Literal["birddog_p400", "ptzoptics_g2", "ptzoptics_g2_12x", "other"] = "birddog_p400"  # core/camera_models.py
     video: Literal["ndi", "capture", "stream"] = "ndi"  # where the picture comes from (control is always over IP)
     ndi: str = ""  # NDI source name, or a unique part of it
     capture_device: int = Field(0, ge=0, le=15)  # HDMI/SDI capture device number (video "capture")

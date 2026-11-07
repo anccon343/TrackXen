@@ -19,11 +19,26 @@ def test_ptzoptics_defaults():
     d = camera_defaults("ptzoptics_g2", 3)
     assert d["visca_transport"] == "udp" and d["visca_port"] == 1259 and d["freed_port"] is None
     assert d["video"] == "stream" and len(d["pan_speeds"]) == 24 and len(d["tilt_speeds"]) == 20
-    assert d["pan_speeds"][0] == 1.7 and d["pan_speeds"][-1] == 100.0 and d["tilt_speeds"][-1] == 69.9
+    # measured on a PT20X-SDI-GY-G2 (2026-11-07)
+    assert d["pan_speeds"][0] == 1.74 and d["pan_speeds"][-1] == 75.07 and d["tilt_speeds"][-1] == 48.87
     cam = CameraConfig(id="cam3", host="192.168.1.60", **d)
+    assert cam.units_per_degree == 14.4 and cam.tilt_units_per_degree is None and cam.video_delay == 0.1
+    assert cam.lens.zoom_max == 15070 and len(cam.lens.zoom_table) == 9 and cam.lens.hfov_wide == 58.22
     assert cam.video_url == "rtsp://192.168.1.60:554/1"
     assert stream_url("ptzoptics_g2", "10.0.0.5", sub_stream=True) == "rtsp://10.0.0.5:554/2"
     assert camera_defaults("birddog_p400", 2)["freed_port"] == 40002
+
+
+def test_the_12x_has_its_own_type():
+    d = camera_defaults("ptzoptics_g2_12x", 1)
+    cam = CameraConfig(id="cam1", host="192.168.1.60", **d)
+    assert cam.model == "ptzoptics_g2_12x" and cam.visca_transport == "udp" and cam.video == "stream"
+    assert (cam.lens.hfov_wide, cam.lens.hfov_tele, cam.lens.zoom_max) == (66.67, 6.31, 16384.0)
+    assert cam.pan_speeds[-1] == 70.14 and cam.tilt_speeds[-1] == 43.49 and cam.units_per_degree == 14.4
+    assert cam.video_url == "rtsp://192.168.1.60:554/1"
+    d["lens"]["zoom_table"][0][1] = 1.0  # each camera has its own copy of the type's tables
+    assert camera_defaults("ptzoptics_g2_12x")["lens"]["zoom_table"][0][1] == 66.67
+    assert ptzoptics_settings()["zoom_max"] == 15070.0 and ptzoptics_settings("ptzoptics_g2_12x")["tilt_units"] == 14.4
 
 
 def test_old_settings_without_header_mean_plain_udp():
@@ -48,7 +63,8 @@ def test_plain_udp_client_talks_to_a_ptzoptics_like_camera():
         await client.connect()
         try:
             pan, tilt = await client.pan_tilt_position()
-            assert pan == round(10.0 * PTZ["units_per_degree"]) and tilt == round(-3.0 * PTZ["tilt_units_per_degree"])
+            tilt_units = PTZ["tilt_units_per_degree"] or PTZ["units_per_degree"]  # (None: the same as pan)
+            assert pan == round(10.0 * PTZ["units_per_degree"]) and tilt == round(-3.0 * tilt_units)
             await client.command(visca.pan_tilt_drive(5, 20, visca.PanDir.RIGHT, visca.TiltDir.UP))
             with pytest.raises(visca.ViscaError, match="syntax"):  # tilt speed 0x17 is beyond this camera
                 await client.command(visca.pan_tilt_drive(5, 23, visca.PanDir.RIGHT, visca.TiltDir.UP))

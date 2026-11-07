@@ -31,4 +31,7 @@
   nav button.active { color: var(--text); border-bottom-color: var(--accent); }
   .body { padding: 10px 12px; overflow-y: auto; flex: 1; }
   .camname { font-weight: 700; margin-bottom: 8px; }
+  /* phone: the whole page scrolls (App.svelte), so the panel is no scrolling box of its own: its Save bar then
+     sticks to the bottom of the screen */
+  @media (max-width: 760px) { .body { overflow-y: visible; } }
 </style>
